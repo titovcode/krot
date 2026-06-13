@@ -1,0 +1,68 @@
+---
+name: ✨ Запрос новой функции
+description: Предложите новую функцию или улучшение для Podkop Plus
+title: "[FEATURE] "
+labels: ["enhancement", "needs-discussion"]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за предложение новой функции!
+        
+        Перед отправкой, пожалуйста:
+        - Проверьте [существующие запросы](https://github.com/ushan0v/podkop-plus/issues?q=is%3Aissue+label%3Aenhancement)
+        - Убедитесь, что функции не существует в [README проекта](https://github.com/ushan0v/podkop-plus#readme)
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Краткое описание
+      description: Краткое описание предлагаемой функции для Podkop Plus
+      placeholder: В одном предложении опишите, что вы хотите добавить...
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Проблема, которую решает
+      description: |
+        Описание проблемы или неудобства, которое решит эта функция
+      placeholder: |
+        Сейчас нет возможности [...]
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 💡 Предлагаемое решение
+      description: Четкое и краткое описание того, что вы хотите реализовать
+      placeholder: |
+        Я хочу, чтобы Podkop мог [...]
+        Предлагаю добавить функцию, которая [...]
+        Можно было бы улучшить [...] путем [...]
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workaround
+      description: |
+        Опишите альтернативные решения или функции, которые вы рассматривали
+        Есть ли обходные пути, которые вы используете сейчас?
+      placeholder: |
+        Сейчас я решаю это проблему путем [...]
+        Альтернативой могло бы быть [...]
+        Пробовал использовать [...], но это не подходит потому что [...]
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Идеи реализации (опционально)
+      description: |
+        Если у вас есть идеи о том, как это можно реализовать, поделитесь ими. Помните про ограничения LuCI.
+      placeholder: |
+        Это можно реализовать с помощью [...]

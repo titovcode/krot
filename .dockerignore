@@ -1,0 +1,10 @@
+.wsl-build
+dist
+fe-app-podkop
+scripts
+sdk
+.github
+.git
+*.md
+LICENSE
+**/.DS_Store

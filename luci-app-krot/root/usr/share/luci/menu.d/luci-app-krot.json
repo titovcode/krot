@@ -1,0 +1,14 @@
+{
+  "admin/services/krot": {
+    "title": "K.R.O.T.",
+    "order": 42,
+    "action": {
+      "type": "view",
+      "path": "krot/podkop"
+    },
+    "depends": {
+			"acl": [ "luci-app-krot" ],
+			"uci": { "krot": true }
+		}
+  }
+}
