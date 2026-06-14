@@ -1,0 +1,9 @@
+{
+  "id": "byedpi",
+  "name": "ByeDPI",
+  "description": "Passive DPI circumvention utility (ciadpi). Modifies TCP/UDP packets to bypass deep packet inspection without a proxy.",
+  "category": "dpi-bypass",
+  "author": "hufrea",
+  "project_url": "https://github.com/hufrea/byedpi",
+  "component": "byedpi"
+}

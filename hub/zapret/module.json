@@ -1,0 +1,9 @@
+{
+  "id": "zapret",
+  "name": "Zapret",
+  "description": "DPI bypass tool using nfqws for circumventing deep packet inspection. Works at the network level without a proxy server.",
+  "category": "dpi-bypass",
+  "author": "bol-van",
+  "project_url": "https://github.com/bol-van/zapret",
+  "component": "zapret"
+}
