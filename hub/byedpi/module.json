@@ -5,5 +5,8 @@
   "category": "dpi-bypass",
   "author": "hufrea",
   "project_url": "https://github.com/hufrea/byedpi",
-  "component": "byedpi"
+  "component": "byedpi",
+  "repo": "titovcode/krot",
+  "version": "1.0.0",
+  "install_script": "hub/byedpi/install.sh"
 }

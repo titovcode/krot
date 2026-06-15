@@ -5,5 +5,8 @@
   "category": "dpi-bypass",
   "author": "bol-van",
   "project_url": "https://github.com/bol-van/zapret",
-  "component": "zapret"
+  "component": "zapret",
+  "repo": "titovcode/krot",
+  "version": "1.0.0",
+  "install_script": "hub/zapret/install.sh"
 }
