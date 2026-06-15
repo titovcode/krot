@@ -1,7 +1,1 @@
-{
-  "modules": [
-    "zapret",
-    "byedpi",
-    "adguard"
-  ]
-}
+{"modules":["zapret","byedpi","adguard"]}
