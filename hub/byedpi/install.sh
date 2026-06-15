@@ -33,12 +33,28 @@ if [ -f /etc/openwrt_release ]; then
     OPENWRT_RELEASE="$(grep 'DISTRIB_RELEASE' /etc/openwrt_release | cut -d'"' -f2 | grep -oE '^[0-9]+\.[0-9]+')"
 fi
 
-# Download helper
+# Detect proxy from K.R.O.T. settings
+PROXY_ADDR=""
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/krot ]; then
+    if uci -q get krot.settings.download_lists_via_proxy 2>/dev/null | grep -q '1'; then
+        PROXY_ADDR="http://127.0.0.1:4534"
+    fi
+fi
+
+# Download helper with proxy support
 http_get() {
     if command -v wget >/dev/null 2>&1; then
-        wget -qO- "$1"
+        if [ -n "$PROXY_ADDR" ]; then
+            http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO- "$1"
+        else
+            wget -qO- "$1"
+        fi
     elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1"
+        if [ -n "$PROXY_ADDR" ]; then
+            curl -fsSL -x "$PROXY_ADDR" "$1"
+        else
+            curl -fsSL "$1"
+        fi
     else
         fail "wget or curl is required"
     fi
@@ -46,9 +62,17 @@ http_get() {
 
 http_download() {
     if command -v wget >/dev/null 2>&1; then
-        wget -qO "$2" "$1"
+        if [ -n "$PROXY_ADDR" ]; then
+            http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" "$1"
+        else
+            wget -qO "$2" "$1"
+        fi
     elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$1" -o "$2"
+        if [ -n "$PROXY_ADDR" ]; then
+            curl -fsSL -x "$PROXY_ADDR" "$1" -o "$2"
+        else
+            curl -fsSL "$1" -o "$2"
+        fi
     else
         fail "wget or curl is required"
     fi

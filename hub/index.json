@@ -1,6 +1,7 @@
 {
   "modules": [
     "zapret",
-    "byedpi"
+    "byedpi",
+    "adguard"
   ]
 }

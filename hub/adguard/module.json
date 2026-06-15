@@ -1,0 +1,12 @@
+{
+  "id": "adguard",
+  "name": "AdGuard Home",
+  "description": "Network-wide ads & trackers blocking DNS server with web interface",
+  "category": "dns",
+  "author": "AdguardTeam",
+  "project_url": "https://github.com/AdguardTeam/AdGuardHome",
+  "component": "adguard",
+  "repo": "titovcode/krot",
+  "version": "1.0.0",
+  "install_script": "hub/adguard/install.sh"
+}
