@@ -20,38 +20,30 @@ if command -v uci >/dev/null 2>&1 && [ -f /etc/config/krot ]; then
     fi
 fi
 
-# Download helper with proxy support
+# Download helper with proxy support (prefer curl over busybox wget for proxy)
 http_get() {
-    if command -v wget >/dev/null 2>&1; then
-        if [ -n "$PROXY_ADDR" ]; then
-            http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO- "$1"
-        else
-            wget -qO- "$1"
-        fi
+    if [ -n "$PROXY_ADDR" ] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 30 -x "$PROXY_ADDR" "$1"
     elif command -v curl >/dev/null 2>&1; then
-        if [ -n "$PROXY_ADDR" ]; then
-            curl -fsSL -x "$PROXY_ADDR" "$1"
-        else
-            curl -fsSL "$1"
-        fi
+        curl -fsSL --max-time 30 "$1"
+    elif [ -n "$PROXY_ADDR" ] && command -v wget >/dev/null 2>&1; then
+        http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO- --timeout=30 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- --timeout=30 "$1"
     else
         fail "wget or curl is required"
     fi
 }
 
 http_download() {
-    if command -v wget >/dev/null 2>&1; then
-        if [ -n "$PROXY_ADDR" ]; then
-            http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" "$1"
-        else
-            wget -qO "$2" "$1"
-        fi
+    if [ -n "$PROXY_ADDR" ] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 60 -x "$PROXY_ADDR" "$1" -o "$2"
     elif command -v curl >/dev/null 2>&1; then
-        if [ -n "$PROXY_ADDR" ]; then
-            curl -fsSL -x "$PROXY_ADDR" "$1" -o "$2"
-        else
-            curl -fsSL "$1" -o "$2"
-        fi
+        curl -fsSL --max-time 60 "$1" -o "$2"
+    elif [ -n "$PROXY_ADDR" ] && command -v wget >/dev/null 2>&1; then
+        http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" --timeout=60 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" --timeout=60 "$1"
     else
         fail "wget or curl is required"
     fi
