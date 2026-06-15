@@ -58,13 +58,13 @@ http_get() {
 
 http_download() {
     if [ -n "$PROXY_ADDR" ] && command -v curl >/dev/null 2>&1; then
-        curl -fsSL --max-time 60 -x "$PROXY_ADDR" "$1" -o "$2"
+        curl -fSL --connect-timeout 15 --max-time 300 -x "$PROXY_ADDR" "$1" -o "$2"
     elif command -v curl >/dev/null 2>&1; then
-        curl -fsSL --max-time 60 "$1" -o "$2"
+        curl -fSL --connect-timeout 15 --max-time 300 "$1" -o "$2"
     elif [ -n "$PROXY_ADDR" ] && command -v wget >/dev/null 2>&1; then
-        http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" --timeout=60 "$1"
+        http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" --timeout=300 "$1"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$2" --timeout=60 "$1"
+        wget -qO "$2" --timeout=300 "$1"
     else
         fail "wget or curl is required"
     fi
