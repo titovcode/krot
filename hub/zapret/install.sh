@@ -75,9 +75,9 @@ BUNDLE_URL=""
 BUNDLE_NAME=""
 
 for arch in $ARCH_LIST; do
-    name="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"name\":\"[^\"]*_${arch}\\.zip\"" | head -1 | sed 's/"name":"//;s/"//')"
+    name="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*_${arch}\\.zip\"" | head -1 | sed 's/^"name"[[:space:]]*:[[:space:]]*"//;s/"$//')"
     if [ -n "$name" ]; then
-        url="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"browser_download_url\":\"[^\"]*$(printf '%s' "$name" | sed 's/\./\\./g')\"" | head -1 | sed 's/"browser_download_url":"//;s/"//')"
+        url="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*/$(printf '%s' "$name" | sed 's/\./\\./g')\"" | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
         if [ -n "$url" ]; then
             BUNDLE_NAME="$name"
             BUNDLE_URL="$url"

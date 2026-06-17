@@ -77,7 +77,7 @@ RELEASE_JSON="$(http_get "${GITHUB_API}/repos/AdguardTeam/AdGuardHome/releases/l
 [ -n "$RELEASE_JSON" ] || fail "Empty response from GitHub API"
 
 # Find matching asset
-DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"browser_download_url\":\"[^\"]*_${AG_PLATFORM}_${AG_ARCH}.tar.gz\"" | head -1 | sed 's/"browser_download_url":"//;s/"//')"
+DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*_${AG_PLATFORM}_${AG_ARCH}.tar.gz\"" | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
 
 [ -n "$DOWNLOAD_URL" ] || fail "No AdGuard package found for ${AG_PLATFORM}/${AG_ARCH}"
 

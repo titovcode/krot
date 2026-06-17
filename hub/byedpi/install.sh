@@ -82,13 +82,13 @@ find_asset() {
     local pattern
     for arch in $ARCH_LIST; do
         if [ -n "$series" ]; then
-            pattern="ciadpi_.*_${series}_.*_${arch}\\.${EXT}"
+            pattern="byedpi_.*_${series}_.*_${arch}\\.${EXT}"
         else
-            pattern="ciadpi_.*_${arch}\\.${EXT}"
+            pattern="byedpi_.*_${arch}\\.${EXT}"
         fi
-        name="$(printf '%s\n' "$RELEASES_JSON" | grep -o "\"name\":\"[^\"]*\"" | sed 's/"name":"//;s/"//' | grep -E "$pattern" | head -1)"
+        name="$(printf '%s\n' "$RELEASES_JSON" | grep -o "\"name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | sed 's/^"name"[[:space:]]*:[[:space:]]*"//;s/"$//' | grep -E "$pattern" | head -1)"
         if [ -n "$name" ]; then
-            url="$(printf '%s\n' "$RELEASES_JSON" | grep -o "\"browser_download_url\":\"[^\"]*$(printf '%s' "$name" | sed 's/\./\\./g')\"" | head -1 | sed 's/"browser_download_url":"//;s/"//')"
+            url="$(printf '%s\n' "$RELEASES_JSON" | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*/$(printf '%s' "$name" | sed 's/\./\\./g')\"" | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
             if [ -n "$url" ]; then
                 printf '%s\t%s\n' "$name" "$url"
                 return 0
