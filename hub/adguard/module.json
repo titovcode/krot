@@ -8,5 +8,6 @@
   "component": "adguard",
   "repo": "titovcode/krot",
   "version": "1.0.0",
-  "install_script": "hub/adguard/install.sh"
+  "install_script": "hub/adguard/install.sh",
+  "remove_script": "hub/adguard/remove.sh"
 }
