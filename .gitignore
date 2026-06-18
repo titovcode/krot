@@ -1,0 +1,19 @@
+# Build artifacts and caches
+.openwrt-sdk-cache/
+.wsl-build/
+dist/
+.DS_Store
+hub/.DS_Store
+
+# Locally-restored source we no longer maintain in this repo
+fe-app-podkop/
+luci-app-podkop-plus/
+krot/
+luci-app-krot/
+sdk/
+tests/
+.github/
+
+# Source archive pollution
+krot-source-*.zip
+krot-source-*.tar.gz
