@@ -1900,7 +1900,7 @@ hub_get_modules() {
             local web_url_raw web_url_resolved router_ip
             web_url_raw="$(printf '%s' "$module_json" | sed -n 's/.*"web_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
             if [ -n "$web_url_raw" ]; then
-                router_ip="$(uci_get network lan ipaddr 2>/dev/null || true)"
+                router_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || true)"
                 [ -n "$router_ip" ] || router_ip="router"
                 # Use shell parameter expansion to avoid issues with sed delimiter
                 # collisions inside the URL (e.g. https://, /path, query strings).

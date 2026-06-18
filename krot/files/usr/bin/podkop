@@ -11844,56 +11844,11 @@ component_action_status)
     component_action_status "$2"
     ;;
 hub_get_modules)
-    _hub_repo="${PODKOP_RELEASE_REPO:-titovcode/krot}"
-    _hub_url="https://raw.githubusercontent.com/${_hub_repo}/main/hub"
-    _hub_ts="$(date +%s)"
-    _hub_tmp="$(mktemp -d /tmp/krot-hub.XXXXXX 2>/dev/null || echo /tmp/krot-hub.$$)"
-    _hub_index="$_hub_tmp/index.json"
-    _hub_result="["
-    _hub_first=1
-    _hub_proxy=""
-    if command -v uci >/dev/null 2>&1 && [ -f /etc/config/krot ]; then
-        if uci -q get krot.settings.download_lists_via_proxy 2>/dev/null | grep -q '1'; then
-            _hub_proxy="http://127.0.0.1:4534"
-        fi
-    fi
-    if [ -n "$_hub_proxy" ]; then
-        http_proxy="$_hub_proxy" https_proxy="$_hub_proxy" wget -qO "$_hub_index" "$_hub_url/index.json?v=${_hub_ts}" 2>/dev/null
-    fi
-    if [ ! -s "$_hub_index" ]; then
-        wget -qO "$_hub_index" "$_hub_url/index.json?v=${_hub_ts}" 2>/dev/null
-    fi
-    if [ ! -s "$_hub_index" ]; then
-        rm -rf "$_hub_tmp"
-        echo "[]"
-        exit 0
-    fi
-    _hub_ids="$(sed 's/.*"modules"[[:space:]]*:[[:space:]]*\[//;s/\].*//' "$_hub_index" 2>/dev/null | tr -d '"' | tr ',' ' ')"
-    for _hub_id in $_hub_ids; do
-        # Strip whitespace safely (busybox `tr` does not understand `[:space:]`).
-        while [ "${_hub_id# }" != "$_hub_id" ]; do
-            _hub_id="${_hub_id# }"
-        done
-        while [ "${_hub_id% }" != "$_hub_id" ]; do
-            _hub_id="${_hub_id% }"
-        done
-        [ -z "$_hub_id" ] && continue
-        _hub_mod="$_hub_tmp/${_hub_id}.json"
-        if [ -n "$_hub_proxy" ]; then
-            http_proxy="$_hub_proxy" https_proxy="$_hub_proxy" wget -qO "$_hub_mod" "$_hub_url/${_hub_id}/module.json?v=${_hub_ts}" 2>/dev/null
-        fi
-        if [ ! -s "$_hub_mod" ]; then
-            wget -qO "$_hub_mod" "$_hub_url/${_hub_id}/module.json?v=${_hub_ts}" 2>/dev/null
-        fi
-        if [ -s "$_hub_mod" ]; then
-            [ "$_hub_first" -eq 0 ] && _hub_result="${_hub_result},"
-            _hub_json="$(tr -d '\n\r' < "$_hub_mod" 2>/dev/null)"
-            _hub_result="${_hub_result}${_hub_json}"
-            _hub_first=0
-        fi
-    done
-    rm -rf "$_hub_tmp"
-    echo "${_hub_result}]"
+    # Single source of truth lives in updater.sh::hub_get_modules() — it
+    # resolves {{router_ip}} in web_url, injects installed/installed_version,
+    # and respects the proxy settings. Calling the function directly keeps
+    # the case statement below aligned with the rest of the Hub code.
+    hub_get_modules
     ;;
 check_dns_available)
     check_dns_available
