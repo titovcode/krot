@@ -113,7 +113,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" <<'YAML'
 http:
   address: 0.0.0.0:3000
-  session_ttl: 720h
+  session_ttl: 720h0m0s
 users: []
 auth_attempts: 5
 upstream_dns:
@@ -159,7 +159,7 @@ dns:
   cache_ttl_max: 0
   cache_optimistic: false
   cache_optimistic_answer_ttl: 30s
-  cache_optimistic_max_age: 12h
+  cache_optimistic_max_age: 12h0m0s
   edns_client_subnet:
     custom_ip: ""
     enabled: false
@@ -169,11 +169,9 @@ dns:
   ipset_file: ""
   querylog_enabled: true
   querylog_file_enabled: true
-  querylog_interval: 168h
   querylog_size_memory: 1000
   log_enabled: true
   log_file: ""
-  log_interval: 24h
   log_size_memory: 4000
   verbose: false
   statistics_interval: 1
@@ -191,11 +189,11 @@ tls:
   allow_unencrypted_doh: false
 querylog:
   enabled: true
-  interval: 168h
+  interval: 168h0m0s
   size_memory: 1000
 statistics:
   enabled: true
-  interval: 24h
+  interval: 24h0m0s
   size_memory: 1000
 YAML
     chmod 0644 "$CONFIG_FILE"
