@@ -217,6 +217,10 @@ done
 if command -v uci >/dev/null 2>&1; then
     msg "Pointing K.R.O.T. DNS to AdGuard (127.0.0.1:5353)..."
     uci -q set krot.settings.dns_server='127.0.0.1:5353'
+    # AdGuard listens on plain UDP/5353; force dns_type=udp so sing-box sends
+    # regular DNS queries (default is doh, which would still work but tags the
+    # link with [doh] in Diagnostics and routes through the DoH code path).
+    uci -q set krot.settings.dns_type='udp'
     uci -q commit krot
     /etc/init.d/krot reload 2>/dev/null || /etc/init.d/krot restart 2>/dev/null || true
 fi
