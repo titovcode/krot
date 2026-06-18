@@ -138,7 +138,6 @@ dns:
   upstream_dns:
     - 1.1.1.1
     - 8.8.8.8
-  bootstrap_dns: []
   fallback_dns:
     - 1.0.0.1
     - 8.8.4.4
