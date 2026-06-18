@@ -35,7 +35,8 @@ if command -v uci >/dev/null 2>&1; then
     msg "Restoring K.R.O.T. DNS to 1.1.1.1..."
     uci -q set krot.settings.dns_server='1.1.1.1'
     uci -q commit krot
-    /etc/init.d/krot reload 2>/dev/null || /etc/init.d/krot restart 2>/dev/null || true
+    # K.R.O.T. will be restarted by the Hub installer (updater.sh) so sing-box
+    # picks up the cleared dns_server. No restart here.
 fi
 
 msg "AdGuard Home removed"

@@ -2112,6 +2112,14 @@ hub_install_module() {
         installed_version="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/"$//')"
     fi
 
+    # Restart K.R.O.T. to pick up any UCI changes the install script made
+    # (e.g. dns_server, dns_type, outbounds). Use restart (not reload) —
+    # sing-box needs to fully rebuild its config.
+    if [ -x /etc/init.d/krot ]; then
+        updates_log "Restarting K.R.O.T. after ${module_id} install"
+        /etc/init.d/krot restart 2>/dev/null || true
+    fi
+
     updates_success "hub" "hub_install_${module_id}" "${module_id} has been installed" "" "$installed_version" 1 "latest"
 }
 
@@ -2171,10 +2179,12 @@ hub_remove_module() {
             return
         fi
 
-        # Restart K.R.O.T. to pick up the changed UCI state
+        # Restart K.R.O.T. to pick up the changed UCI state. Use restart
+        # (not just reload) — the install/remove script may have flipped
+        # dns_server / dns_type, and sing-box needs to fully rebuild.
         if [ -x /etc/init.d/krot ]; then
             updates_log "Restarting K.R.O.T. after ${module_id} removal"
-            /etc/init.d/krot reload 2>/dev/null || true
+            /etc/init.d/krot restart 2>/dev/null || true
         fi
 
         updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""

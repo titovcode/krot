@@ -222,7 +222,8 @@ if command -v uci >/dev/null 2>&1; then
     # link with [doh] in Diagnostics and routes through the DoH code path).
     uci -q set krot.settings.dns_type='udp'
     uci -q commit krot
-    /etc/init.d/krot reload 2>/dev/null || /etc/init.d/krot restart 2>/dev/null || true
+    # K.R.O.T. will be restarted by the Hub installer (updater.sh) so sing-box
+    # picks up the new dns_server / dns_type. No restart here.
 fi
 
 ROUTER_IP="$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
