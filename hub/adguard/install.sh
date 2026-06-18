@@ -214,7 +214,7 @@ tls:
 querylog:
   enabled: true
   file_enabled: true
-  interval: 2160h
+  interval: 2160h0m0s
   size_memory: 1000
 statistics:
   enabled: true
