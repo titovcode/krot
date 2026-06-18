@@ -100,77 +100,66 @@ tar -xzf "$TMP_DIR/adguard.tar.gz" -C /opt/ 2>/dev/null \
 
 chmod +x /opt/AdGuardHome/AdGuardHome 2>/dev/null || true
 
-# Pre-seed AdGuardHome config so it binds to 127.0.0.1:53 — that way K.R.O.T.
-# (which uses 127.0.0.42:53) and AdGuard can coexist on the same router.
-# AdGuard will not start the web UI setup wizard if AdGuardHome.yaml already
-# exists with valid auth.
+# Pre-seed AdGuardHome config so it binds to 127.0.0.1:5353 (NOT :53 —
+# dnsmasq already binds :53, and we don't want to fight it). K.R.O.T. uses
+# 127.0.0.42 for its own DNS inbound, so 5353 is free.
+#
+# We pass dns_server=127.0.0.1#5353 below to sing-box so it talks to AdGuard
+# on the alternate port. AdGuard will not start the setup wizard if
+# AdGuardHome.yaml already exists with valid auth.
 CONFIG_FILE="/opt/AdGuardHome/AdGuardHome.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
-    msg "Pre-seeding AdGuard Home config (bind 127.0.0.1:53)..."
+    msg "Pre-seeding AdGuard Home config (bind 127.0.0.1:5353)..."
     cat > "$CONFIG_FILE" <<'YAML'
 http:
   address: 0.0.0.0:3000
+  session_ttl: 720h
 users: []
 auth_attempts: 5
-blocklist_client_rules: []
-blocklist_disabled: false
 upstream_dns:
   - 1.1.1.1
   - 8.8.8.8
-upstream_dns_file: ""
 upstream_mode: load_balance
 filtering:
   filtering_enabled: true
   filters_update_interval: 24
   blocking_mode: default
   blocked_response_ttl: 10
-  protection_enabled: true
-  protection_disabled_until: null
-  parental_enabled: false
-  safebrowsing_enabled: false
-  safesearch_enabled: false
-  safesearch_disabled_until: null
-  safe_dns_enabled: false
-  safe_dns_provider: ""
-  blocking_ipv4: ""
-  blocking_ipv6: ""
-  blocked_services:
-    schedule:
-      time_zone: Local
-  parental_blocked_services: []
-  safebrowsing_blocked_services: []
-  safe_dns_blocked_services: []
 dns:
-  bind_host: 127.0.0.1
-  port: 53
+  bind_hosts:
+    - 127.0.0.1
+  port: 5353
   anonymize_client_ip: false
-  protection_enabled: true
   ratelimit: 20
-  ratelimit_subnet_len: 24
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
   ratelimit_whitelist: []
   refuse_any: true
   upstream_dns:
     - 1.1.1.1
     - 8.8.8.8
-  upstream_dns_file: ""
-  bootstrap_dns:
-    - 9.9.9.10
-    - 149.112.112.10
+  bootstrap_dns: []
   fallback_dns:
     - 1.0.0.1
     - 8.8.4.4
   upstream_mode: load_balance
-  fastest_ip_addr: false
-  access_list: []
+  fastest_timeout: 1s
   allowed_clients: []
   disallowed_clients: []
   blocked_hosts:
     - version.bind
     - id.server
     - hostname.bind
-  trusted_proxies: []
-  dns64_prefixes: []
-  dnssec_enabled: false
+  trusted_proxies:
+    - 127.0.0.0/8
+    - ::1/128
+  cache_enabled: true
+  cache_size: 4194304
+  cache_ttl_min: 0
+  cache_ttl_max: 0
+  cache_optimistic: false
+  cache_optimistic_answer_ttl: 30s
+  cache_optimistic_max_age: 12h
   edns_client_subnet:
     custom_ip: ""
     enabled: false
@@ -180,14 +169,17 @@ dns:
   ipset_file: ""
   querylog_enabled: true
   querylog_file_enabled: true
-  querylog_interval: 2160h0m0s
+  querylog_interval: 168h
   querylog_size_memory: 1000
   log_enabled: true
   log_file: ""
-  log_interval: 24h0m0s
+  log_interval: 24h
   log_size_memory: 4000
   verbose: false
   statistics_interval: 1
+  protection_enabled: true
+  dns64_prefixes: []
+  dnssec_enabled: false
 tls:
   enabled: false
   server_name: ""
@@ -196,31 +188,15 @@ tls:
   port_dns_over_tls: 853
   port_dns_over_quic: 853
   port_dnscrypt: 0
-  dnscrypt_config_file: ""
   allow_unencrypted_doh: false
-  strict_sni_check: false
-  certificate_chain: ""
-  private_key: ""
-  certificate_path: ""
-  private_key_path: ""
-  ocsp_response: ""
-  ocsp_stapling: false
-  dnsip_edns: ""
-  upstream_mode: load_balance
-  cipher_list: ""
-  curve_preferences: ""
-  support_plain_dns: true
-  config_override: ""
 querylog:
   enabled: true
-  file_enabled: true
-  interval: 2160h0m0s
+  interval: 168h
   size_memory: 1000
 statistics:
   enabled: true
-  interval: 1
+  interval: 24h
   size_memory: 1000
-web_session_ttl: 720h0m0s
 YAML
     chmod 0644 "$CONFIG_FILE"
 fi
@@ -238,10 +214,12 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
 done
 
-# Configure K.R.O.T. to use AdGuard as its upstream DNS
+# Configure K.R.O.T. to use AdGuard as its upstream DNS.
+# Use 127.0.0.1:5353 (NOT :53) so sing-box dials the alternate port.
+# :53 is already bound by dnsmasq and we don't want to fight it.
 if command -v uci >/dev/null 2>&1; then
-    msg "Pointing K.R.O.T. DNS to AdGuard (127.0.0.1)..."
-    uci -q set krot.settings.dns_server='127.0.0.1'
+    msg "Pointing K.R.O.T. DNS to AdGuard (127.0.0.1:5353)..."
+    uci -q set krot.settings.dns_server='127.0.0.1:5353'
     uci -q commit krot
     /etc/init.d/krot reload 2>/dev/null || /etc/init.d/krot restart 2>/dev/null || true
 fi
@@ -251,6 +229,6 @@ ROUTER_IP="$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
 msg "AdGuard Home installed successfully"
 msg ""
 msg "Web interface: http://${ROUTER_IP}:3000 (configure filters, users, etc.)"
-msg "DNS:           127.0.0.1:53 (consumed by K.R.O.T. sing-box)"
+msg "DNS:           127.0.0.1:5353 (consumed by K.R.O.T. sing-box)"
 msg ""
 msg "K.R.O.T. now routes all DNS through AdGuard for filtering."

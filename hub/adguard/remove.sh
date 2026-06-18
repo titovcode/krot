@@ -10,7 +10,7 @@ if [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
     msg "AdGuard Home is not installed"
     # Even if not installed, restore K.R.O.T. defaults in case UCI is still pointing at it
     if command -v uci >/dev/null 2>&1; then
-        if [ "$(uci -q get krot.settings.dns_server 2>/dev/null || true)" = "127.0.0.1" ]; then
+        if [ "$(uci -q get krot.settings.dns_server 2>/dev/null || true)" = "127.0.0.1:5353" ]; then
             msg "Restoring K.R.O.T. DNS to 1.1.1.1..."
             uci -q set krot.settings.dns_server='1.1.1.1'
             uci -q commit krot
