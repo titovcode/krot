@@ -214,16 +214,16 @@ done
 # Configure K.R.O.T. to use AdGuard as its upstream DNS.
 # Use 127.0.0.1:5353 (NOT :53) so sing-box dials the alternate port.
 # :53 is already bound by dnsmasq and we don't want to fight it.
+# We do NOT touch dns_type on purpose: the user's existing choice (udp / dot /
+# doh) is preserved. AdGuard accepts all three, and forcing udp breaks setups
+# where the user relies on DoH for upstream IP diversity (e.g. Meta CDN IPs
+# that differ between UDP-resolver and DoH-resolver chains).
 if command -v uci >/dev/null 2>&1; then
     msg "Pointing K.R.O.T. DNS to AdGuard (127.0.0.1:5353)..."
     uci -q set krot.settings.dns_server='127.0.0.1:5353'
-    # AdGuard listens on plain UDP/5353; force dns_type=udp so sing-box sends
-    # regular DNS queries (default is doh, which would still work but tags the
-    # link with [doh] in Diagnostics and routes through the DoH code path).
-    uci -q set krot.settings.dns_type='udp'
     uci -q commit krot
     # K.R.O.T. will be restarted by the Hub installer (updater.sh) so sing-box
-    # picks up the new dns_server / dns_type. No restart here.
+    # picks up the new dns_server. No restart here.
 fi
 
 ROUTER_IP="$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
