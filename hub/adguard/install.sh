@@ -180,11 +180,11 @@ dns:
   ipset_file: ""
   querylog_enabled: true
   querylog_file_enabled: true
-  querylog_interval: 2160h
+  querylog_interval: 2160h0m0s
   querylog_size_memory: 1000
   log_enabled: true
   log_file: ""
-  log_interval: 24h
+  log_interval: 24h0m0s
   log_size_memory: 4000
   verbose: false
   statistics_interval: 1
@@ -220,7 +220,7 @@ statistics:
   enabled: true
   interval: 1
   size_memory: 1000
-web_session_ttl: 720h
+web_session_ttl: 720h0m0s
 YAML
     chmod 0644 "$CONFIG_FILE"
 fi
