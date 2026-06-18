@@ -1,0 +1,459 @@
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace ClashAPI {
+  interface ProxyHistoryEntry {
+    time: string;
+    delay: number;
+  }
+
+  export interface ProxyBase {
+    type: string;
+    name: string;
+    udp: boolean;
+    history: ProxyHistoryEntry[];
+    now?: string;
+    all?: string[];
+  }
+
+  export interface Proxies {
+    proxies: Record<string, ProxyBase>;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-namespace
+export namespace Podkop {
+  // Available commands:
+  // start                   Start podkop service
+  // stop                    Stop podkop service
+  // reload                  Reload podkop configuration
+  // restart                 Restart podkop service
+  // enable                  Enable podkop autostart
+  // disable                 Disable podkop autostart
+  // uninstall               Remove podkop files installed outside opkg/apk
+  // main                    Run main podkop process
+  // list_update             Update domain lists
+  // check_proxy             Check proxy connectivity
+  // check_nft               Check NFT rules
+  // check_nft_rules         Check NFT rules status
+  // check_sing_box          Check sing-box installation and status
+  // check_inbounds_config   Check whether enabled server inbounds are configured
+  // check_inbounds          Check server inbounds from the Servers tab
+  // check_logs              Show podkop logs from system journal
+  // check_sing_box_logs     Show sing-box logs
+  // check_fakeip            Test sing-box FakeIP DNS
+  // clash_api               Clash API interface for managing proxies and groups
+  // show_config             Display current podkop configuration
+  // show_version            Show podkop version
+  // show_sing_box_config    Show sing-box configuration
+  // show_sing_box_version   Show sing-box version
+  // get_status              Get podkop service status
+  // get_sing_box_status     Get sing-box service status
+  // check_dns_available     Check DNS server availability
+  // global_check            Run global system check
+
+  export enum AvailableMethods {
+    CHECK_DNS_AVAILABLE = 'check_dns_available',
+    CHECK_FAKEIP = 'check_fakeip',
+    CHECK_NFT_RULES = 'check_nft_rules',
+    CHECK_ZAPRET_RUNTIME = 'check_zapret_runtime',
+    CHECK_BYEDPI_RUNTIME = 'check_byedpi_runtime',
+    CHECK_INBOUNDS_CONFIG = 'check_inbounds_config',
+    GET_STATUS = 'get_status',
+    GET_OUTBOUND_LINK = 'get_outbound_link',
+    GET_OUTBOUND_LINK_STATES = 'get_outbound_link_states',
+    GET_OUTBOUND_METADATA = 'get_outbound_metadata',
+    GET_SUBSCRIPTION_METADATA = 'get_subscription_metadata',
+    CHECK_SING_BOX = 'check_sing_box',
+    CHECK_INBOUNDS = 'check_inbounds',
+    GET_SING_BOX_STATUS = 'get_sing_box_status',
+    GET_ZAPRET_STATUS = 'get_zapret_status',
+    GET_BYEDPI_STATUS = 'get_byedpi_status',
+    CLASH_API = 'clash_api',
+    RESTART = 'restart',
+    START = 'start',
+    STOP = 'stop',
+    ENABLE = 'enable',
+    DISABLE = 'disable',
+    GLOBAL_CHECK = 'global_check',
+    SHOW_SING_BOX_CONFIG = 'show_sing_box_config',
+    CHECK_LOGS = 'check_logs',
+    CHECK_SING_BOX_LOGS = 'check_sing_box_logs',
+    GET_SYSTEM_INFO = 'get_system_info',
+    COMPONENT_ACTION = 'component_action',
+    COMPONENT_ACTION_ASYNC = 'component_action_async',
+    COMPONENT_ACTION_STATUS = 'component_action_status',
+    SUBSCRIPTION_UPDATE = 'subscription_update',
+    SUBSCRIPTION_UPDATE_ASYNC = 'subscription_update_async',
+    SUBSCRIPTION_UPDATE_STATUS = 'subscription_update_status',
+    BACKUP_CONFIG = 'backup_config',
+    HUB_LIST_SOURCES = 'hub_list_sources',
+    HUB_GET_MODULES = 'hub_get_modules',
+  }
+
+  export enum AvailableClashAPIMethods {
+    GET_PROXIES = 'get_proxies',
+    GET_CONNECTIONS = 'get_connections',
+    GET_PROXY_LATENCY = 'get_proxy_latency',
+    GET_GROUP_LATENCY = 'get_group_latency',
+    SET_GROUP_PROXY = 'set_group_proxy',
+    CLOSE_CONNECTION = 'close_connection',
+    CLOSE_ALL_CONNECTIONS = 'close_all_connections',
+  }
+
+  export interface Outbound {
+    code: string;
+    displayName: string;
+    latency: number;
+    type: string;
+    selected: boolean;
+    link?: string;
+    canCopyLink?: boolean;
+    country?: string;
+    showLatency?: boolean;
+  }
+
+  export interface OutboundGroup {
+    withTagSelect: boolean;
+    code: string;
+    sectionName: string;
+    displayName: string;
+    icon?: string;
+    enabled?: boolean;
+    action?: RuleAction;
+    traffic?: {
+      upload: number;
+      download: number;
+    };
+    latencyTestCode?: string;
+    proxyConfigType?: ProxyConfigType;
+    subscriptionSourceCount?: number;
+    subscriptionUrls?: string[];
+    subscriptionMetadata?: SubscriptionMetadata[];
+    outbounds: Outbound[];
+  }
+
+  interface SubscriptionTraffic {
+    upload?: number;
+    download?: number;
+    used?: number;
+    total?: number;
+    remaining?: number;
+    isUnlimited?: boolean;
+  }
+
+  export interface SubscriptionMetadata {
+    version?: number;
+    title?: string;
+    traffic?: SubscriptionTraffic;
+    expire?: number;
+    refillDate?: number;
+    webPageUrl?: string;
+    supportUrl?: string;
+    announce?: string;
+    announceUrl?: string;
+    fileName?: string;
+    sourceIndex?: number;
+    sourceSection?: string;
+  }
+
+  type RuleAction =
+    | 'proxy'
+    | 'outbound'
+    | 'vpn'
+    | 'direct'
+    | 'block'
+    | 'zapret'
+    | 'byedpi';
+  type LegacyConnectionType = 'proxy' | 'vpn' | 'block' | 'exclusion';
+  type ProxyConfigType =
+    | 'urltest'
+    | 'selector'
+    | 'url'
+    | 'outbound'
+    | 'interface'
+    | 'subscription';
+
+  export interface ConfigSection {
+    '.name': string;
+    '.type': 'settings' | 'rule' | 'node' | 'ruleset' | 'section' | 'server';
+    label?: string;
+    enabled?: string;
+    action?: RuleAction;
+    connection_type?: LegacyConnectionType;
+    proxy_config_type?: ProxyConfigType;
+    node?: string;
+    rule_set?: string[];
+    rule_set_with_subnets?: string[];
+    domain_ip_lists?: string[];
+    ports?: string[];
+    update_interval?: string;
+    proxy_string?: string;
+    nfqws_opt?: string;
+    byedpi_cmd_opts?: string;
+    cmd_opts?: string;
+    selector_proxy_links?: string[];
+    subscription_urls?: string[];
+    urltest_proxy_links?: string[];
+    subscription_url?: string;
+    subscription_user_agent?: string;
+    subscription_update_enabled?: '0' | '1';
+    subscription_update_interval?: string;
+    subscription_update_interval_disabled?: '0' | '1';
+    urltest_enabled?: '0' | '1';
+    urltest_check_interval_disabled?: '0' | '1';
+    detect_server_country?: '0' | '1';
+    urltest_filter_mode?: 'disabled' | 'exclude' | 'include' | 'mixed';
+    urltest_hide_filtered_outbounds?: '0' | '1';
+    urltest_exclude_countries?: string[];
+    urltest_exclude_outbounds?: string[];
+    urltest_exclude_regex?: string[];
+    urltest_include_countries?: string[];
+    urltest_include_outbounds?: string[];
+    urltest_include_regex?: string[];
+    outbound_json?: string;
+    interface?: string;
+    icon?: string;
+    yacd_secret_key?: string;
+  }
+
+  export interface MethodSuccessResponse<T> {
+    success: true;
+    data: T;
+  }
+
+  export interface MethodFailureResponse {
+    success: false;
+    error: string;
+  }
+
+  export type MethodResponse<T> =
+    | MethodSuccessResponse<T>
+    | MethodFailureResponse;
+
+  export interface DnsCheckResult {
+    dns_type: 'udp' | 'doh' | 'dot';
+    dns_server: string;
+    dns_status: 0 | 1;
+    dns_on_router: 0 | 1;
+    bootstrap_dns_server: string;
+    bootstrap_dns_status: 0 | 1;
+    dhcp_config_status: 0 | 1;
+  }
+
+  export interface NftRulesCheckResult {
+    table_exist: 0 | 1;
+    rules_mangle_exist: 0 | 1;
+    rules_mangle_counters: 0 | 1;
+    rules_mangle_output_exist: 0 | 1;
+    rules_mangle_output_counters: 0 | 1;
+    rules_proxy_exist: 0 | 1;
+    rules_proxy_counters: 0 | 1;
+    rules_other_mark_exist: 0 | 1;
+  }
+
+  export interface SingBoxCheckResult {
+    sing_box_installed: 0 | 1;
+    sing_box_version_ok: 0 | 1;
+    sing_box_service_exist: 0 | 1;
+    sing_box_autostart_disabled: 0 | 1;
+    sing_box_process_running: 0 | 1;
+    sing_box_ports_listening: 0 | 1;
+  }
+
+  export interface InboundCheckItem {
+    section: string;
+    label: string;
+    protocol: string;
+    routing_mode: string;
+    tag: string;
+    listen: string;
+    listen_port: number;
+    public_host: string;
+    public_host_ips: string;
+    expected_type: string;
+    required_proto: string;
+    runtime_exists: 0 | 1;
+    runtime_type: string;
+    runtime_listen: string;
+    runtime_port: number;
+    runtime_ok: 0 | 1;
+    listening: -1 | 0 | 1;
+    firewall_required: 0 | 1;
+    firewall_open: -1 | 0 | 1;
+    routes_configured: 0 | 1;
+    public_host_resolved: -1 | 0 | 1;
+    public_host_public: -1 | 0 | 1;
+    public_host_matches_wan: -1 | 0 | 1;
+  }
+
+  export interface InboundsCheckResult {
+    enabled_count: number;
+    config_path: string;
+    wan_ip: string;
+    wan_public: 0 | 1;
+    items: InboundCheckItem[];
+  }
+
+  export interface InboundsConfigCheckResult {
+    enabled_count: number;
+  }
+
+  export interface FakeIPCheckResult {
+    fakeip: boolean;
+    IP: string;
+  }
+
+  export interface GetStatus {
+    running: number;
+    enabled: number;
+    status: string;
+    dns_configured?: number;
+  }
+
+  export interface GetOutboundLink {
+    link: string;
+  }
+
+  export type GetOutboundLinkStates = Record<string, boolean>;
+
+  export interface GetOutboundMetadata {
+    names?: Record<string, string>;
+    countries?: Record<string, string>;
+  }
+
+  export interface GetSingBoxStatus {
+    running: number;
+    enabled: number;
+    status: string;
+  }
+
+  export interface GetSystemInfo {
+    podkop_version: string;
+    podkop_latest_version: string;
+    luci_app_version: string;
+    sing_box_version: string;
+    sing_box_extended: 0 | 1;
+    zapret_version: string;
+    zapret_installed: 0 | 1;
+    byedpi_version: string;
+    byedpi_installed: 0 | 1;
+    openwrt_version: string;
+    device_model: string;
+    generated_at?: number;
+  }
+
+  export type ComponentName = 'podkop' | 'sing_box' | 'zapret' | 'byedpi' | 'hub';
+
+  export type ComponentAction =
+    | 'check_update'
+    | 'install'
+    | 'remove'
+    | 'install_extended'
+    | 'install_stable'
+    | `hub_install_${string}`;
+
+  export interface ComponentActionResult {
+    success: boolean;
+    running?: boolean;
+    component: ComponentName;
+    action: ComponentAction;
+    message: string;
+    current_version: string;
+    latest_version: string;
+    release_url?: string;
+    changed: boolean;
+    status?: 'latest' | 'outdated' | 'dev' | '';
+    exit_code?: number | null;
+  }
+
+  export interface ComponentActionStartResult {
+    success: boolean;
+    job_id: string;
+    message: string;
+  }
+
+  export interface SubscriptionUpdateStartResult {
+    success: boolean;
+    job_id: string;
+    message: string;
+  }
+
+  export interface SubscriptionUpdateJobState {
+    success: boolean;
+    running?: boolean;
+    message?: string;
+    exit_code?: number | null;
+    updated_at?: number;
+  }
+
+  export interface GetZapretStatus {
+    installed: 0 | 1;
+    package_installed: 0 | 1;
+    provider_available: 0 | 1;
+    provider_path: string;
+    files_available: 0 | 1;
+    ipset_available: 0 | 1;
+    version: string;
+    configured: 0 | 1;
+    enabled_rule_count: number;
+    expected_process_count: number;
+    running_process_count: number;
+    supervisor_process_count: number;
+    restart_count: number;
+    runtime_unstable: 0 | 1;
+    standalone_service_enabled: 0 | 1;
+    standalone_service_running: 0 | 1;
+    standalone_config_present: 0 | 1;
+    standalone_conflict: 0 | 1;
+    luci_app_installed: 0 | 1;
+    queue_base: number;
+    queue_range_end: number;
+    queue_overlap: 0 | 1;
+    legacy_runtime_present: 0 | 1;
+    ready: 0 | 1;
+    conflict: 0 | 1;
+    status_message: string;
+  }
+
+  export interface ZapretCheckResult {
+    zapret_installed: 0 | 1;
+    zapret_package_installed: 0 | 1;
+    zapret_provider_path: string;
+  }
+
+  export interface GetByedpiStatus {
+    installed: 0 | 1;
+    package_installed: 0 | 1;
+    provider_available: 0 | 1;
+    provider_path: string;
+    version: string;
+    configured: 0 | 1;
+    enabled_rule_count: number;
+    expected_process_count: number;
+    running_process_count: number;
+    supervisor_process_count: number;
+    restart_count: number;
+    runtime_unstable: 0 | 1;
+    standalone_service_enabled: 0 | 1;
+    standalone_service_running: 0 | 1;
+    listen_address: string;
+    port_base: number;
+    outbounds_configured: 0 | 1;
+    routes_configured: 0 | 1;
+    ready: 0 | 1;
+    conflict: 0 | 1;
+    status_message: string;
+  }
+
+  export interface ByedpiCheckResult {
+    byedpi_installed: 0 | 1;
+    byedpi_package_installed: 0 | 1;
+    byedpi_provider_path: string;
+  }
+
+  export interface GetClashApiProxyLatency {
+    delay: number;
+    message?: string;
+  }
+
+  export type GetClashApiGroupLatency = Record<string, number>;
+}

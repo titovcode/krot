@@ -1893,7 +1893,27 @@ hub_get_modules() {
             else
                 installed_json=",\"installed\":false,\"installed_version\":\"\""
             fi
-            # Inject installed / installed_version as the last properties of the object.
+
+            # Resolve web_url template ({{router_ip}} -> actual LAN IP) so the
+            # Hub page can deep-link to the module's own web panel from any
+            # router. If we can't determine the LAN IP, fall back to "router".
+            local web_url_raw web_url_resolved router_ip
+            web_url_raw="$(printf '%s' "$module_json" | sed -n 's/.*"web_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+            if [ -n "$web_url_raw" ]; then
+                router_ip="$(uci_get network lan ipaddr 2>/dev/null || true)"
+                [ -n "$router_ip" ] || router_ip="router"
+                # Use shell parameter expansion to avoid issues with sed delimiter
+                # collisions inside the URL (e.g. https://, /path, query strings).
+                web_url_resolved="${web_url_raw//\$\{router_ip\}/$router_ip}"
+                web_url_resolved="${web_url_resolved//\{\{router_ip\}\}/$router_ip}"
+                web_url_resolved="${web_url_resolved//\\$\\{router_ip\\}/$router_ip}"
+                # Escape for JSON: backslashes, then double quotes
+                web_url_resolved="${web_url_resolved//\\/\\\\}"
+                web_url_resolved="${web_url_resolved//\"/\\\"}"
+                installed_json="${installed_json},\"web_url\":\"${web_url_resolved}\""
+            fi
+
+            # Inject installed / installed_version / web_url as the last properties of the object.
             # Strip trailing whitespace, then the final `}`, so we can append new fields.
             # Done with POSIX parameter expansion (no sed regex) so that '$' / '&' / '}'
             # characters inside installed_version don't break the substitution.

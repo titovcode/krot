@@ -1,0 +1,43 @@
+{
+  "luci-app-krot": {
+    "description": "Grant UCI and RPC access to LuCI app K.R.O.T.",
+    "read": {
+      "file": {
+        "/etc/init.d/krot": [
+          "exec"
+        ],
+        "/var/run/krot/section-cache/*": [
+          "read"
+        ],
+        "/var/run/krot/component-actions/*": [
+          "read"
+        ],
+        "/usr/bin/krot": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "luci-rpc": [
+          "getDHCPLeases",
+          "getHostHints"
+        ],
+        "network.interface": [
+          "dump"
+        ],
+        "service": [
+          "list"
+        ]
+      },
+      "uci": [
+        "krot",
+        "network",
+        "wireless"
+      ]
+    },
+    "write": {
+      "uci": [
+        "krot"
+      ]
+    }
+  }
+}

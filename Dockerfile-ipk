@@ -1,0 +1,13 @@
+FROM itdoginfo/openwrt-sdk-ipk:24.10.6
+
+ARG PODKOP_VERSION
+
+COPY ./krot /builder/package/feeds/utilities/krot
+COPY ./luci-app-krot /builder/package/feeds/luci/luci-app-krot
+
+RUN export PODKOP_VERSION="${PODKOP_VERSION}" && \
+    make defconfig && \
+    make package/krot/compile V=s -j1 && \
+    make package/luci-app-krot/compile V=s -j1 && \
+    mkdir -p /builder/output && \
+    find /builder/bin -name '*.ipk' -exec cp {} /builder/output/ \;

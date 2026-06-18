@@ -5,6 +5,7 @@
   "category": "dns",
   "author": "AdguardTeam",
   "project_url": "https://github.com/AdguardTeam/AdGuardHome",
+  "web_url": "http://{{router_ip}}:3000",
   "component": "adguard",
   "repo": "titovcode/krot",
   "version": "1.0.0",
