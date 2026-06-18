@@ -117,9 +117,13 @@ http:
 users: []
 auth_attempts: 5
 upstream_dns:
-  - 1.1.1.1
-  - 8.8.8.8
+  - https://1.1.1.1/dns-query
+  - https://1.0.0.1/dns-query
+  - tls://1.1.1.1
 upstream_mode: load_balance
+bootstrap_dns:
+  - 1.1.1.1
+  - 1.0.0.1
 filtering:
   filtering_enabled: true
   filters_update_interval: 24
@@ -136,13 +140,19 @@ dns:
   ratelimit_whitelist: []
   refuse_any: true
   upstream_dns:
-    - 1.1.1.1
-    - 8.8.8.8
+    - https://1.1.1.1/dns-query
+    - https://1.0.0.1/dns-query
+    - tls://1.1.1.1
   fallback_dns:
-    - 1.0.0.1
-    - 8.8.4.4
+    - tls://1.0.0.1
   upstream_mode: load_balance
   fastest_timeout: 1s
+  # Use Cloudflare (1.1.1.1) as bootstrap to resolve DoH/DoT hostnames
+  # before the encrypted upstream is reachable. Without this, AdGuard
+  # cannot dial "1.1.1.1" by name when upstream_dns uses https:// or tls://.
+  bootstrap_dns:
+    - 1.1.1.1
+    - 1.0.0.1
   allowed_clients: []
   disallowed_clients: []
   blocked_hosts:
