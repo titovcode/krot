@@ -3224,6 +3224,8 @@ start_main() {
 
     migration
 
+    optimize_tcp_stack
+
     prepare_all_server_defaults
     config_foreach process_validate_rule "section"
     validate_runtime_settings
@@ -4099,6 +4101,45 @@ br_netfilter_disable() {
         log "br_netfilter enabled detected. Disabling"
         sysctl -w net.bridge.bridge-nf-call-iptables=0
         sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+    fi
+}
+
+optimize_tcp_stack() {
+    local enable_bbr enable_tcp_buffers
+
+    config_get_bool enable_bbr "settings" "enable_bbr" 1
+    config_get_bool enable_tcp_buffers "settings" "enable_tcp_buffers" 1
+
+    if [ "$enable_bbr" -eq 1 ]; then
+        if [ -f /lib/modules/*/tcp_bbr.ko ] || [ -d /sys/module/tcp_bbr ]; then
+            if ! modprobe tcp_bbr 2>/dev/null && [ ! -d /sys/module/tcp_bbr ]; then
+                log "BBR kernel module not available" "debug"
+            fi
+        fi
+
+        if [ -d /sys/module/tcp_bbr ]; then
+            local current_cc
+            current_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+            if [ "$current_cc" = "bbr" ]; then
+                log "BBR congestion control is active" "info"
+            else
+                sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 && \
+                    log "TCP congestion control set to BBR" "info" || \
+                    log "Failed to enable BBR congestion control" "warn"
+            fi
+        else
+            log "BBR kernel module not loaded; install kmod-tcp-bbr to enable BBR" "info"
+        fi
+    else
+        log "BBR auto-optimization is disabled" "debug"
+    fi
+
+    if [ "$enable_tcp_buffers" -eq 1 ]; then
+        sysctl -w net.core.rmem_max=6291456 >/dev/null 2>&1 || true
+        sysctl -w net.core.wmem_max=6291456 >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.tcp_rmem="4096 131072 6291456" >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.tcp_wmem="4096 131072 6291456" >/dev/null 2>&1 || true
+        log "TCP buffers optimized" "debug"
     fi
 }
 
