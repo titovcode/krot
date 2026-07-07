@@ -232,6 +232,13 @@ done
 # dot/doh in K.R.O.T. Settings afterwards if they want a different transport.
 if command -v uci >/dev/null 2>&1; then
     msg "Pointing K.R.O.T. DNS to AdGuard (127.0.0.1:5353, udp)..."
+    # Remember the user's previous DNS settings so remove.sh can restore them.
+    PREV_DNS_SERVER="$(uci -q get krot.settings.dns_server 2>/dev/null || true)"
+    PREV_DNS_TYPE="$(uci -q get krot.settings.dns_type 2>/dev/null || true)"
+    if [ "$PREV_DNS_SERVER" != "127.0.0.1:5353" ]; then
+        uci -q set krot.settings.adguard_prev_dns_server="$PREV_DNS_SERVER"
+        uci -q set krot.settings.adguard_prev_dns_type="$PREV_DNS_TYPE"
+    fi
     uci -q set krot.settings.dns_server='127.0.0.1:5353'
     uci -q set krot.settings.dns_type='udp'
     uci -q commit krot
