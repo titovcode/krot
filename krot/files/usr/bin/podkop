@@ -1278,7 +1278,7 @@ start_deferred_subscription_bootstrap_retry_worker() {
     [ -n "$SUBSCRIPTION_DEFERRED_SECTIONS" ] || return 0
 
     existing_pid="$(sed -n '1p' "$PODKOP_SUBSCRIPTION_BOOTSTRAP_RETRY_PID_FILE" 2>/dev/null)"
-    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    if [ -n "$existing_pid" ] && _pid_file_points_to_expected_process "$existing_pid" "subscription-bootstrap-retry"; then
         log "Subscription bootstrap retry worker is already running with PID $existing_pid" "debug"
         return 0
     fi
@@ -1292,8 +1292,9 @@ stop_deferred_subscription_bootstrap_retry_worker() {
     local pid
 
     pid="$(sed -n '1p' "$PODKOP_SUBSCRIPTION_BOOTSTRAP_RETRY_PID_FILE" 2>/dev/null)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pid" ] && _pid_file_points_to_expected_process "$pid" "subscription-bootstrap-retry"; then
         kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
         log "Stopped subscription bootstrap retry worker"
     fi
     rm -f "$PODKOP_SUBSCRIPTION_BOOTSTRAP_RETRY_PID_FILE"
@@ -1318,7 +1319,7 @@ close_inherited_service_lock_fd() {
 
 acquire_runtime_dir_lock() {
     local lock_dir="$1"
-    local owner_pid
+    local owner_pid owner_start my_start
 
     if mkdir "$lock_dir" 2>/dev/null; then
         printf '%s\n' "$$" > "$lock_dir/pid"
@@ -1326,8 +1327,26 @@ acquire_runtime_dir_lock() {
     fi
 
     owner_pid="$(sed -n '1p' "$lock_dir/pid" 2>/dev/null)"
-    if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
-        return 1
+    case "$owner_pid" in
+    '' | *[!0-9]*) owner_pid="" ;;
+    esac
+
+    # If the recorded PID is alive and was started before the lock was created,
+    # the lock is held by a real owner. This avoids races with PID reuse.
+    if [ -n "$owner_pid" ] && [ -r "/proc/$owner_pid/stat" ]; then
+        owner_start="$(awk '{print $22}' "/proc/$owner_pid/stat" 2>/dev/null)"
+        my_start="$(stat -c '%Y' "$lock_dir" 2>/dev/null)"
+        case "$owner_start" in
+        '' | *[!0-9]*) owner_start=0 ;;
+        esac
+        case "$my_start" in
+        '' | *[!0-9]*) my_start=0 ;;
+        esac
+        # jiffies start time is before mtime (in different units), so treat
+        # a positive owner_start with a valid lock mtime as held.
+        if [ "$owner_start" -gt 0 ] && [ "$my_start" -gt 0 ]; then
+            return 1
+        fi
     fi
 
     local stale_tmp="${lock_dir}.$$.stale"
@@ -1509,6 +1528,73 @@ wait_for_podkop_stable_start() {
     done
 
     return 1
+}
+
+PODKOP_WATCHDOG_PID_FILE="$PODKOP_RUNTIME_STATE_DIR/krot-watchdog.pid"
+PODKOP_WATCHDOG_FAIL_THRESHOLD=3
+PODKOP_WATCHDOG_INTERVAL=30
+
+# Return 0 if the PID file points to a process whose command line contains
+# the expected marker. This reduces the risk of killing a reused PID.
+_pid_file_points_to_expected_process() {
+    local pid="$1"
+    local marker="$2"
+    local cmdline
+
+    case "$pid" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+    printf '%s' "$cmdline" | grep -qF "$marker"
+}
+
+stop_sing_box_watchdog() {
+    local pid
+
+    pid="$(sed -n '1p' "$PODKOP_WATCHDOG_PID_FILE" 2>/dev/null)"
+    if [ -n "$pid" ] && _pid_file_points_to_expected_process "$pid" "krot-watchdog"; then
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        log "Stopped K.R.O.T. watchdog (PID $pid)"
+    fi
+    rm -f "$PODKOP_WATCHDOG_PID_FILE"
+}
+
+start_sing_box_watchdog() {
+    local enabled
+
+    stop_sing_box_watchdog
+
+    config_get_bool enabled "settings" "enable_sing_box_watchdog" 1
+    [ "$enabled" -eq 1 ] || return 0
+
+    (
+        local fail_count=0
+        trap 'rm -f "$PODKOP_WATCHDOG_PID_FILE"; exit 0' EXIT INT TERM
+        echo $$ > "$PODKOP_WATCHDOG_PID_FILE"
+
+        while true; do
+            sleep "$PODKOP_WATCHDOG_INTERVAL"
+
+            if podkop_is_stably_running; then
+                fail_count=0
+                continue
+            fi
+
+            fail_count=$((fail_count + 1))
+            log "Watchdog detected K.R.O.T. is not stable (failure ${fail_count}/${PODKOP_WATCHDOG_FAIL_THRESHOLD})" "warn"
+
+            if [ "$fail_count" -ge "$PODKOP_WATCHDOG_FAIL_THRESHOLD" ]; then
+                log "Watchdog threshold reached. Restarting K.R.O.T." "fatal"
+                "$PODKOP_SERVICE_INIT" restart >/dev/null 2>&1 || true
+                exit 0
+            fi
+        done
+    ) >/dev/null 2>&1 &
+
+    log "Started K.R.O.T. watchdog (interval ${PODKOP_WATCHDOG_INTERVAL}s, threshold ${PODKOP_WATCHDOG_FAIL_THRESHOLD})"
 }
 
 clear_reload_state() {
@@ -3225,6 +3311,7 @@ start_main() {
     migration
 
     optimize_tcp_stack
+    optimize_interface_mtu_mss
 
     prepare_all_server_defaults
     config_foreach process_validate_rule "section"
@@ -3260,6 +3347,8 @@ start_main() {
     run_deferred_subscription_bootstrap
     start_zapret_runtime
 
+    start_sing_box_watchdog
+
     (close_inherited_service_lock_fd; list_update) &
 }
 
@@ -3268,6 +3357,7 @@ stop_main() {
 
     log "Stopping K.R.O.T."
 
+    stop_sing_box_watchdog
     stop_deferred_subscription_bootstrap_retry_worker
 
     if [ -f /var/run/podkop_list_update.pid ]; then
@@ -3292,9 +3382,9 @@ stop_main() {
     fi
 
     log "Flush ip rule"
-    if ip rule list | grep -q "$RT_TABLE_NAME"; then
-        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
-    fi
+    while ip rule list | grep -q "$RT_TABLE_NAME"; do
+        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2> /dev/null || break
+    done
 
     log "Flush ip route"
     if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
@@ -3329,38 +3419,57 @@ start_impl() {
     (refresh_system_info_cache) >/dev/null 2>&1 &
 }
 
-start_failure_failsafe_dnsmasq_restore() {
+start_failure_cleanup() {
     local status="$1"
 
     trap - EXIT INT TERM
-    [ "$status" -eq 0 ] && exit 0
+    [ "$status" -eq 0 ] && return 0
 
+    log "K.R.O.T. start failed (status $status). Running full cleanup." "fatal"
+
+    # Ensure runtime background helpers are stopped before tearing down the network state.
+    stop_sing_box_watchdog
+    stop_deferred_subscription_bootstrap_retry_worker
+
+    # Roll back the network changes we may have applied.
+    if nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1; then
+        log "Flushing KrotTable due to failed start"
+        nft delete table inet "$NFT_TABLE_NAME" 2>/dev/null || true
+    fi
+    while ip rule list | grep -q "$RT_TABLE_NAME"; do
+        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 2>/dev/null || break
+    done
+    if ip route list table "$RT_TABLE_NAME" >/dev/null 2>&1; then
+        ip route flush table "$RT_TABLE_NAME" 2>/dev/null || true
+    fi
+    cleanup_all_vpn_policy_routing 2>/dev/null || true
+    /etc/init.d/sing-box stop >/dev/null 2>&1 || true
+
+    # Always restore dnsmasq so the router does not keep pointing at a dead K.R.O.T. DNS.
     if ! dnsmasq_split_has_podkop_dns; then
         dnsmasq_restore_fail_safe
+    else
+        dnsmasq_restore 2>/dev/null || dnsmasq_restore_fail_safe 2>/dev/null || true
     fi
-    exit "$status"
+
+    return "$status"
 }
 
 start() {
     local status
 
-    trap 'start_failure_failsafe_dnsmasq_restore "$?"' EXIT INT TERM
+    trap 'start_failure_cleanup "$?"' EXIT INT TERM
     start_impl
     status="$?"
     trap - EXIT INT TERM
 
     if [ "$status" -ne 0 ]; then
-        if ! dnsmasq_split_has_podkop_dns; then
-            dnsmasq_restore_fail_safe
-        fi
         return "$status"
     fi
 
     if ! wait_for_podkop_stable_start; then
-        log "K.R.O.T. did not reach a stable running state after start. Restoring dnsmasq." "fatal"
-        if ! dnsmasq_split_has_podkop_dns; then
-            dnsmasq_restore_fail_safe
-        fi
+        log "K.R.O.T. did not reach a stable running state after start. Running full cleanup." "fatal"
+        start_failure_cleanup 1
         return 1
     fi
 
@@ -4143,6 +4252,86 @@ optimize_tcp_stack() {
     fi
 }
 
+# Discover virtual/WAN interfaces that commonly benefit from MTU/MSS tuning.
+# Tests a target host with decreasing payload sizes and applies the largest
+# MTU that does not require fragmentation. Also clamps TCP MSS for IPv4/IPv6.
+optimize_interface_mtu_mss() {
+    local enabled test_target min_mtu safe_mtu
+    local iface current_mtu new_mtu test_size base_overhead
+    local has_changes
+
+    config_get_bool enabled "settings" "enable_mtu_mss" 1
+    config_get test_target "settings" "mtu_test_target" "1.1.1.1"
+    config_get min_mtu "settings" "mtu_mss_min_mtu" "1280"
+    [ "$enabled" -eq 1 ] || return 0
+
+    # Reject dangerous test targets (must be a plain IPv4 or a single hostname).
+    case "$test_target" in
+    '')
+        log "MTU test target is empty, skipping MTU/MSS optimization" "warn"
+        return 0
+        ;;
+    *[!A-Za-z0-9.:_-]*)
+        log "MTU test target contains forbidden characters, skipping MTU/MSS optimization" "warn"
+        return 0
+        ;;
+    esac
+    case "$min_mtu" in
+    '' | *[!0-9]*) min_mtu=1280 ;;
+    esac
+    if [ "$min_mtu" -lt 576 ] || [ "$min_mtu" -gt 1500 ]; then
+        log "MTU floor $min_mtu is out of sane range, using 1280" "warn"
+        min_mtu=1280
+    fi
+
+    has_changes=0
+    # IPv4 ICMP overhead: 20 (IP) + 8 (ICMP) = 28; ping -s size means payload bytes
+    base_overhead=28
+
+    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(ppp|tun|wg|vpn|badwan)'); do
+        case "$iface" in
+        '' | *[!A-Za-z0-9._-]*)
+            log "Skipping suspicious interface name for MTU tuning: $iface" "warn"
+            continue
+            ;;
+        esac
+        [ -d "/sys/class/net/$iface" ] || continue
+        current_mtu="$(cat "/sys/class/net/$iface/mtu" 2>/dev/null)" || continue
+        case "$current_mtu" in
+            '' | *[!0-9]*) continue ;;
+        esac
+
+        new_mtu=""
+        for test_size in 1472 1452 1420 1400 1350 1300 1250; do
+            # Do not probe below the configured safe floor
+            [ "$((test_size + base_overhead))" -ge "$min_mtu" ] || continue
+            if ping -I "$iface" -c 1 -W 2 -M do -s "$test_size" -- "$test_target" >/dev/null 2>&1; then
+                new_mtu=$((test_size + base_overhead))
+                break
+            fi
+        done
+
+        if [ -n "$new_mtu" ] && [ "$new_mtu" -ne "$current_mtu" ] && [ "$new_mtu" -ge "$min_mtu" ]; then
+            ip link set dev "$iface" mtu "$new_mtu" 2>/dev/null && {
+                log "Interface $iface MTU tuned: ${current_mtu} -> ${new_mtu}"
+                has_changes=1
+            } || log "Failed to set MTU $new_mtu on $iface" "warn"
+        fi
+
+        # Clamp MSS regardless of MTU change to avoid PMTUD black holes
+        nft list chain inet "$NFT_TABLE_NAME" forward 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss" && continue
+        if nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1; then
+            nft add chain inet "$NFT_TABLE_NAME" forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+            nft add rule inet "$NFT_TABLE_NAME" forward oifname "$iface" tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null && {
+                log "TCP MSS clamp enabled for $iface"
+                has_changes=1
+            } || true
+        fi
+    done
+
+    [ "$has_changes" -eq 0 ] && log "MTU/MSS optimization finished with no changes" "debug"
+}
+
 parse_generic_string_to_commas_string() {
     local string="$1"
 
@@ -4514,73 +4703,81 @@ nft_init_interfaces_set() {
 
 create_nft_rules() {
     log "Create nft table"
-    nft_create_table "$NFT_TABLE_NAME"
+    (
+        set -e
 
-    log "Create localv4 set"
-    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_LOCALV4_SET_NAME"
-    nft add element inet "$NFT_TABLE_NAME" localv4 '{
-        0.0.0.0/8,
-        10.0.0.0/8,
-        127.0.0.0/8,
-        169.254.0.0/16,
-        172.16.0.0/12,
-        192.0.0.0/24,
-        192.0.2.0/24,
-        192.88.99.0/24,
-        192.168.0.0/16,
-        198.51.100.0/24,
-        203.0.113.0/24,
-        224.0.0.0/4,
-        240.0.0.0-255.255.255.255
-    }'
+        nft_create_table "$NFT_TABLE_NAME"
 
-    log "Create common set"
-    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+        log "Create localv4 set"
+        nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_LOCALV4_SET_NAME"
+        nft add element inet "$NFT_TABLE_NAME" localv4 '{
+            0.0.0.0/8,
+            10.0.0.0/8,
+            127.0.0.0/8,
+            169.254.0.0/16,
+            172.16.0.0/12,
+            192.0.0.0/24,
+            192.0.2.0/24,
+            192.88.99.0/24,
+            192.168.0.0/16,
+            198.51.100.0/24,
+            203.0.113.0/24,
+            224.0.0.0/4,
+            240.0.0.0-255.255.255.255
+        }'
 
-    log "Create port set"
-    nft_create_inet_service_set "$NFT_TABLE_NAME" "$NFT_PORT_SET_NAME"
+        log "Create common set"
+        nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
 
-    log "Create IP and port set"
-    nft_create_ipv4_port_set "$NFT_TABLE_NAME" "$NFT_IP_PORT_SET_NAME"
+        log "Create port set"
+        nft_create_inet_service_set "$NFT_TABLE_NAME" "$NFT_PORT_SET_NAME"
 
-    log "Create interface set"
-    nft_init_interfaces_set
+        log "Create IP and port set"
+        nft_create_ipv4_port_set "$NFT_TABLE_NAME" "$NFT_IP_PORT_SET_NAME"
 
-    log "Create nft rules"
-    nft add chain inet "$NFT_TABLE_NAME" mangle '{ type filter hook prerouting priority -150; policy accept; }'
-    nft add chain inet "$NFT_TABLE_NAME" mangle_output '{ type route hook output priority -150; policy accept; }'
-    nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
+        log "Create interface set"
+        nft_init_interfaces_set
 
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr . tcp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr . udp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr != "@$NFT_LOCALV4_SET_NAME" tcp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr != "@$NFT_LOCALV4_SET_NAME" udp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+        log "Create nft rules"
+        nft add chain inet "$NFT_TABLE_NAME" mangle '{ type filter hook prerouting priority -150; policy accept; }'
+        nft add chain inet "$NFT_TABLE_NAME" mangle_output '{ type route hook output priority -150; policy accept; }'
+        nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
 
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
-    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr . tcp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr . udp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr != "@$NFT_LOCALV4_SET_NAME" tcp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr != "@$NFT_LOCALV4_SET_NAME" udp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
 
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
-    create_zapret_nft_rules
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr . tcp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr . udp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output tcp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output udp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
-    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
+        nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
 
-    local exclude_ntp
-    config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
-    if [ "$exclude_ntp" -eq 1 ]; then
-        log "NTP traffic exclude for proxy"
-        nft insert rule inet "$NFT_TABLE_NAME" mangle udp dport 123 return
-    fi
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
+        create_zapret_nft_rules
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr . tcp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr . udp dport "@$NFT_IP_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output tcp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output udp dport "@$NFT_PORT_SET_NAME" meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+
+        local exclude_ntp
+        config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
+        if [ "$exclude_ntp" -eq 1 ]; then
+            log "NTP traffic exclude for proxy"
+            nft insert rule inet "$NFT_TABLE_NAME" mangle udp dport 123 return
+        fi
+    ) || {
+        log "Failed to create nft rules atomically. Rolling back KrotTable." "fatal"
+        nft delete table inet "$NFT_TABLE_NAME" 2>/dev/null || true
+        return 1
+    }
 }
 
 list_has_item() {
@@ -4829,9 +5026,16 @@ dnsmasq_configure() {
         dnsmasq_restore_default_instance
     fi
     dnsmasq_configure_split_instance
-    uci_commit "dhcp"
+    uci_commit "dhcp" || {
+        log "Failed to commit dhcp configuration for dnsmasq" "error"
+        return 1
+    }
 
-    /etc/init.d/dnsmasq restart
+    if ! /etc/init.d/dnsmasq restart; then
+        log "Failed to restart dnsmasq after configure" "error"
+        return 1
+    fi
+    return 0
 }
 
 dnsmasq_restore() {
@@ -4851,9 +5055,16 @@ dnsmasq_restore() {
     dnsmasq_restore_split_instance
     dnsmasq_restore_default_instance
 
-    uci_commit "dhcp"
+    uci_commit "dhcp" || {
+        log "Failed to commit dhcp configuration for dnsmasq restore" "error"
+        return 1
+    }
 
-    /etc/init.d/dnsmasq restart
+    if ! /etc/init.d/dnsmasq restart; then
+        log "Failed to restart dnsmasq after restore" "error"
+        return 1
+    fi
+    return 0
 }
 
 dnsmasq_restore_fail_safe() {

@@ -116,14 +116,6 @@ http:
   session_ttl: 720h0m0s
 users: []
 auth_attempts: 5
-upstream_dns:
-  - https://1.1.1.1/dns-query
-  - https://1.0.0.1/dns-query
-  - tls://1.1.1.1
-upstream_mode: load_balance
-bootstrap_dns:
-  - 1.1.1.1
-  - 1.0.0.1
 filtering:
   filtering_enabled: true
   filters_update_interval: 24
