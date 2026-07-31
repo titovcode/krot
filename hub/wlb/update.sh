@@ -6,7 +6,7 @@ set -e
 
 WLB_REPO="${WLB_REPO:-titovcode/krot}"
 WLB_BRANCH="${WLB_BRANCH:-main}"
-URL="https://raw.githubusercontent.com/${WLB_REPO}/${WLB_BRANCH}/hub/whitelist-bypass/install.sh"
+URL="https://raw.githubusercontent.com/${WLB_REPO}/${WLB_BRANCH}/hub/wlb/install.sh"
 
 TMP="$(mktemp /tmp/wlb-update.XXXXXX 2>/dev/null || echo /tmp/wlb-update.$$)"
 trap 'rm -f "$TMP"' EXIT HUP INT TERM

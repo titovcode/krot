@@ -102,6 +102,6 @@ ubus call service list         # procd-инстансы
 ## Локальное тестирование без пуша в GitHub
 
 ```sh
-scp -r hub/whitelist-bypass root@router:/tmp/wlb
+scp -r hub/wlb root@router:/tmp/wlb
 ssh root@router 'cd /tmp/wlb && WLB_PAYLOAD_DIR=./files sh install.sh'
 ```

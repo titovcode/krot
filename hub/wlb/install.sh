@@ -15,7 +15,7 @@
 #   WLB_PLATFORMS="telemost vk" Platforms to install (default: all four)
 set -e
 
-MODULE_ID="whitelist-bypass"
+MODULE_ID="wlb"
 MODULE_VERSION="0.3.0"
 WLB_REPO="${WLB_REPO:-titovcode/krot}"
 WLB_BRANCH="${WLB_BRANCH:-main}"
