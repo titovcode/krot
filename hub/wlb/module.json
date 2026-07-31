@@ -7,7 +7,7 @@
   "project_url": "https://github.com/kulikov0/whitelist-bypass",
   "component": "wlb",
   "repo": "titovcode/krot",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "web_url": "http://{{router_ip}}/cgi-bin/luci/admin/services/krot",
   "install_script": "hub/wlb/install.sh",
   "update_script": "hub/wlb/update.sh",

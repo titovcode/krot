@@ -20,6 +20,8 @@ fi
 [ -f "/etc/config/${CONFIG_NAME}" ] || exit 0
 
 . /lib/functions.sh
+# /lib/functions.sh references $IPKG_INSTROOT under `set -u`; define it.
+export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
 config_load "$CONFIG_NAME"
 
 get_opt() {

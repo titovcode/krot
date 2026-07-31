@@ -21,6 +21,8 @@ RUN_DIR="/var/run/krot-wlb"
 PERSIST_DIR="/etc/krot-wlb/state"
 
 . /lib/functions.sh
+# /lib/functions.sh references $IPKG_INSTROOT under `set -u`; define it.
+export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
 config_load "$CONFIG_NAME"
 
 # Options are read wlb_-prefixed (krot server sections) with a fallback to the
