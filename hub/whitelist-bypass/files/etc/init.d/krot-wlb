@@ -1,0 +1,62 @@
+#!/bin/sh /etc/rc.common
+# krot-wlb: Whitelist Bypass creators.
+#
+# Sources of instances:
+#   - K.R.O.T. Servers tab: server sections in /etc/config/krot with protocol 'wlb'
+#   - legacy module config: instance sections in /etc/config/krot_wlb
+
+START=95
+STOP=10
+USE_PROCD=1
+
+start_service() {
+	. /lib/functions.sh
+
+	if [ -f /etc/config/krot_wlb ]; then
+		config_load krot_wlb
+		config_foreach start_wlb_legacy_instance instance
+	fi
+
+	if [ -f /etc/config/krot ]; then
+		config_load krot
+		config_foreach start_wlb_server server
+	fi
+}
+
+wlb_spawn() {
+	local name="$1" cfg="$2" section="$3" cfgfile="$4"
+
+	procd_open_instance "$name"
+	procd_set_param command /bin/sh /usr/lib/krot-wlb/wlb-run.sh "$cfg" "$section"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file "$cfgfile"
+	procd_close_instance
+}
+
+start_wlb_legacy_instance() {
+	local section="$1"
+	local enabled
+	config_get_bool enabled "$section" enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+	wlb_spawn "$section" krot_wlb "$section" /etc/config/krot_wlb
+}
+
+start_wlb_server() {
+	local section="$1"
+	local protocol enabled
+	config_get protocol "$section" protocol ""
+	[ "$protocol" = "wlb" ] || return 0
+	config_get_bool enabled "$section" enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+	wlb_spawn "krot-$section" krot "$section" /etc/config/krot
+}
+
+reload_service() {
+	restart
+}
+
+service_triggers() {
+	procd_add_reload_trigger krot krot_wlb
+}
