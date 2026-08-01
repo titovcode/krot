@@ -348,7 +348,8 @@ chmod 0755 "$OLC_INIT"
 "$OLC_GEN_QR" >/dev/null 2>&1 || true
 
 /etc/init.d/olcrtc enable 2>/dev/null || true
-/etc/init.d/olcrtc start 2>/dev/null || true
+# restart (not start): a re-run after an update must apply the new config.
+/etc/init.d/olcrtc restart 2>/dev/null || /etc/init.d/olcrtc start 2>/dev/null || true
 
 ROUTER_IP="$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
 
