@@ -284,6 +284,8 @@ render_yaml() {
     config_get key settings key ""
     config_get transport settings transport datachannel
     config_get dns settings dns 1.1.1.1:53
+    config_get socks_proxy_addr settings socks_proxy_addr ""
+    config_get socks_proxy_port settings socks_proxy_port 0
     config_get liveness_interval settings liveness_interval 30s
     config_get liveness_timeout settings liveness_timeout 30s
     config_get liveness_failures settings liveness_failures 5
@@ -304,6 +306,9 @@ crypto:
 net:
   transport: ${transport}
   dns: "${dns}"
+socks:
+  proxy_addr: "${socks_proxy_addr}"
+  proxy_port: ${socks_proxy_port}
 liveness:
   interval: ${liveness_interval}
   timeout: ${liveness_timeout}
