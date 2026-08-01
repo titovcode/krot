@@ -9,7 +9,6 @@
         "/bin/chmod": [ "exec" ],
         "/etc/krot-wlb/*": [ "read" ],
         "/var/run/krot-wlb/*": [ "read" ],
-        "/tmp/run/krot-wlb/*": [ "read" ],
         "/tmp/run/krot-wlb/*": [ "read" ]
       },
       "ubus": {
