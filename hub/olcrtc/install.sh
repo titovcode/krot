@@ -81,7 +81,7 @@ gen_hex() {
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex "$1" 2>/dev/null
     else
-        head -c "$1" /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n'
+        head -c "$1" /dev/urandom 2>/dev/null | hexdump -ve '1/1 "%02x"'
     fi
 }
 
@@ -91,7 +91,7 @@ if [ -x "$OLC_BIN" ]; then
 elif [ -f /tmp/olcrtc ]; then
     msg "Installing manually placed binary from /tmp/olcrtc..."
     mkdir -p "$OLC_DIR"
-    install -m 0755 /tmp/olcrtc "$OLC_BIN"
+    cp /tmp/olcrtc "$OLC_BIN" && chmod 0755 "$OLC_BIN"
 else
     msg "Downloading olcrtc ($OLC_ARCH) from ${REPO} releases..."
     if [ -n "$OLCRTC_BINARY_URL" ]; then
@@ -105,7 +105,7 @@ else
     http_download "$DOWNLOAD_URL" "$TMP_DIR/olcrtc" || fail "Failed to download olcrtc from ${DOWNLOAD_URL}"
     [ -s "$TMP_DIR/olcrtc" ] || fail "Downloaded binary is empty"
     mkdir -p "$OLC_DIR"
-    install -m 0755 "$TMP_DIR/olcrtc" "$OLC_BIN"
+    cp "$TMP_DIR/olcrtc" "$OLC_BIN" && chmod 0755 "$OLC_BIN"
 fi
 
 mkdir -p "$OLC_DATA_DIR"

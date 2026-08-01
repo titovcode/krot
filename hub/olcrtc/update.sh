@@ -52,7 +52,7 @@ fi
 http_download "$DOWNLOAD_URL" "$TMP_DIR/olcrtc" || fail "Failed to download olcrtc"
 [ -s "$TMP_DIR/olcrtc" ] || fail "Downloaded binary is empty"
 mkdir -p /opt/olcrtc
-install -m 0755 "$TMP_DIR/olcrtc" /opt/olcrtc/olcrtc
+cp "$TMP_DIR/olcrtc" /opt/olcrtc/olcrtc && chmod 0755 /opt/olcrtc/olcrtc
 
 msg "Updating QR renderer..."
 http_download "https://raw.githubusercontent.com/${REPO}/${BRANCH}/hub/olcrtc/qrcode.js" \
