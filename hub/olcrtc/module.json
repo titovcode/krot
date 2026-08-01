@@ -1,0 +1,15 @@
+{
+  "id": "olcrtc",
+  "name": "olcRTC tunnel",
+  "description": "Encrypted TCP-over-WebRTC tunnel (olcrtc srv). Traffic is masked as a video call on allow-listed services (Jitsi, Telemost, WB Stream). Phones connect by QR or olcrtc:// link.",
+  "category": "tunnel",
+  "author": "kulikov0",
+  "project_url": "https://github.com/openlibrecommunity/olcrtc",
+  "web_url": "http://{{router_ip}}/olcrtc/",
+  "component": "olcrtc",
+  "repo": "titovcode/krot",
+  "version": "0.1.0",
+  "install_script": "hub/olcrtc/install.sh",
+  "update_script": "hub/olcrtc/update.sh",
+  "remove_script": "hub/olcrtc/remove.sh"
+}
