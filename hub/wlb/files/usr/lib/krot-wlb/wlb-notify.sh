@@ -9,7 +9,7 @@
 #
 # (wlb_)notify_via_proxy 1 routes Telegram/ntfy through the K.R.O.T. local
 # proxy (127.0.0.1:4534) — useful when the target itself is blocked on WAN.
-set -u
+# Note: no `set -u` — OpenWrt /lib/functions.sh is not nounset-safe.
 
 if [ $# -ge 3 ]; then
     CONFIG_NAME="$1"; SECTION="$2"; LINK="$3"
@@ -19,9 +19,10 @@ fi
 [ -n "$SECTION" ] && [ -n "$LINK" ] || exit 0
 [ -f "/etc/config/${CONFIG_NAME}" ] || exit 0
 
-. /lib/functions.sh
-# /lib/functions.sh references $IPKG_INSTROOT under `set -u`; define it.
+# /lib/functions.sh references $IPKG_INSTROOT under `set -u` (already at
+# source time), so the default must be exported BEFORE sourcing it.
 export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
+. /lib/functions.sh
 config_load "$CONFIG_NAME"
 
 get_opt() {

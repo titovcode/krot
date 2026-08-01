@@ -9,7 +9,8 @@
 #   - resolve UCI config for the instance
 #   - rejoin the last conference when possible (stable link across restarts)
 #   - watch the --write-file link file and fire notifications on a new link
-set -u
+# Note: no `set -u` — OpenWrt /lib/functions.sh is not nounset-safe
+# (references $IPKG_INSTROOT), and config_get would abort the script.
 
 CONFIG_NAME="${1:-krot_wlb}"
 SECTION="${2:-}"
@@ -20,9 +21,10 @@ BIN_DIR="/usr/lib/krot-wlb/bin"
 RUN_DIR="/var/run/krot-wlb"
 PERSIST_DIR="/etc/krot-wlb/state"
 
-. /lib/functions.sh
-# /lib/functions.sh references $IPKG_INSTROOT under `set -u`; define it.
+# /lib/functions.sh references $IPKG_INSTROOT under `set -u` (already at
+# source time), so the default must be exported BEFORE sourcing it.
 export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
+. /lib/functions.sh
 config_load "$CONFIG_NAME"
 
 # Options are read wlb_-prefixed (krot server sections) with a fallback to the
