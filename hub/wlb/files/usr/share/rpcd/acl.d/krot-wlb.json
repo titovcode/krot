@@ -8,7 +8,9 @@
         "/usr/lib/krot-wlb/wlb-yandex-login.sh": [ "exec" ],
         "/bin/chmod": [ "exec" ],
         "/etc/krot-wlb/*": [ "read" ],
-        "/var/run/krot-wlb/*": [ "read" ]
+        "/var/run/krot-wlb/*": [ "read" ],
+        "/tmp/run/krot-wlb/*": [ "read" ],
+        "/tmp/run/krot-wlb/*": [ "read" ]
       },
       "ubus": {
         "service": [ "list" ]
