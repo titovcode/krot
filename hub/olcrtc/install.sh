@@ -125,8 +125,21 @@ config settings 'settings'
 	option key '${DEFAULT_KEY}'
 	option transport 'datachannel'
 	option dns '1.1.1.1:53'
+	option liveness_interval '30s'
+	option liveness_timeout '30s'
+	option liveness_failures '5'
 EOF
     chmod 0600 "$OLC_CONFIG"
+fi
+
+# Fill in liveness options on an existing config (tolerate jittery SFU).
+# A reinstall/update must not overwrite a user's room/key/transport.
+if [ -f "$OLC_CONFIG" ] && command -v uci >/dev/null 2>&1; then
+    for opt in liveness_interval:30s liveness_timeout:30s liveness_failures:5; do
+        name="${opt%%:*}"; val="${opt#*:}"
+        uci -q get "olcrtc.settings.${name}" >/dev/null 2>&1 || uci -q set "olcrtc.settings.${name}=${val}"
+    done
+    uci -q commit olcrtc 2>/dev/null || true
 fi
 
 # ── 3. QR page assets (downloaded from the same module repo) ─────────────
@@ -271,6 +284,9 @@ render_yaml() {
     config_get key settings key ""
     config_get transport settings transport datachannel
     config_get dns settings dns 1.1.1.1:53
+    config_get liveness_interval settings liveness_interval 30s
+    config_get liveness_timeout settings liveness_timeout 30s
+    config_get liveness_failures settings liveness_failures 5
 
     [ "$enabled" -eq 1 ] || return 1
     [ -n "$room_id" ] || return 1
@@ -288,6 +304,10 @@ crypto:
 net:
   transport: ${transport}
   dns: "${dns}"
+liveness:
+  interval: ${liveness_interval}
+  timeout: ${liveness_timeout}
+  failures: ${liveness_failures}
 data: ${OLC_DATA}
 debug: false
 EOF
