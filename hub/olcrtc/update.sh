@@ -58,6 +58,27 @@ msg "Updating QR renderer..."
 http_download "https://raw.githubusercontent.com/${REPO}/${BRANCH}/hub/olcrtc/qrcode.js" \
     /www/olcrtc/qrcode.js || true
 
+# Route phone tunnel traffic through K.R.O.T.'s mixed inbound (sing-box) so
+# routing rules apply to phone traffic. Only fills the socks proxy when the
+# user hasn't configured one explicitly.
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/olcrtc ]; then
+    if [ -z "$(uci -q get olcrtc.settings.socks_proxy_addr 2>/dev/null || true)" ] \
+        && [ -z "$(uci -q get olcrtc.settings.socks_proxy_port 2>/dev/null || true)" ]; then
+        lan_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
+        mp_port=""
+        for sec in $(uci -q show krot 2>/dev/null | sed -n 's/^krot\.\([^.]*\)=section$/\1/p'); do
+            [ "$(uci -q get "krot.${sec}.mixed_proxy_enabled" 2>/dev/null || echo 0)" = "1" ] || continue
+            mp_port="$(uci -q get "krot.${sec}.mixed_proxy_port" 2>/dev/null || true)"
+            [ -n "$mp_port" ] && break
+        done
+        if [ -n "$mp_port" ]; then
+            uci -q set "olcrtc.settings.socks_proxy_addr=${lan_ip}"
+            uci -q set "olcrtc.settings.socks_proxy_port=${mp_port}"
+            uci -q commit olcrtc 2>/dev/null || true
+        fi
+    fi
+fi
+
 [ -x /opt/olcrtc/gen-qr.sh ] && /opt/olcrtc/gen-qr.sh >/dev/null 2>&1 || true
 
 /etc/init.d/olcrtc restart 2>/dev/null || true
