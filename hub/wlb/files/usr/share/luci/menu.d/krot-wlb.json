@@ -1,0 +1,14 @@
+{
+  "admin/services/krot-wlb": {
+    "title": "WLB: Mobile bypass",
+    "order": 43,
+    "action": {
+      "type": "view",
+      "path": "krot-wlb/wlb"
+    },
+    "depends": {
+      "acl": [ "luci-app-krot-wlb" ],
+      "uci": { "krot_wlb": true }
+    }
+  }
+}

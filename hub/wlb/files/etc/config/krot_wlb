@@ -1,0 +1,24 @@
+# K.R.O.T. Whitelist Bypass module configuration.
+# Manage instances from LuCI: Services -> WLB: Mobile bypass.
+
+config settings 'settings'
+	# Base URL with headless-<platform>-creator-linux-<arch> binaries.
+	# Empty = use upstream kulikov0/whitelist-bypass releases.
+	#option bin_base ''
+
+# One instance = one conference = exactly ONE mobile device (upstream limit).
+# Add another instance for every additional phone.
+#
+#config instance 'phone1'
+#	option enabled '1'
+#	option label 'My phone'
+#	option platform 'telemost'          # telemost | vk | wbstream | dion
+#	option resources 'moderate'         # moderate | default | unlimited
+#	option cookies '/etc/krot-wlb/cookies-yandex.json'
+#	option upstream_socks ''            # '127.0.0.1:4534' = egress via K.R.O.T. rules
+#	option rejoin '1'                   # reuse the last conference across restarts
+#	option notify_via_proxy '0'         # send notifications through the K.R.O.T. proxy
+#	option notify_telegram_token ''     # bot token from @BotFather
+#	option notify_telegram_chat ''      # chat id
+#	option notify_ntfy ''               # e.g. https://ntfy.sh/my-secret-topic
+#	option notify_cmd ''                # custom command, link in $WLB_LINK
