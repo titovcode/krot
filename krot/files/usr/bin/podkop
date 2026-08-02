@@ -2611,6 +2611,7 @@ rebuild_nft_runtime() {
 
     route_table_rule_mark
     create_nft_rules
+    apply_interface_mss_clamp
 }
 
 refresh_list_update_cron() {
@@ -3311,7 +3312,6 @@ start_main() {
     migration
 
     optimize_tcp_stack
-    optimize_interface_mtu_mss
 
     prepare_all_server_defaults
     config_foreach process_validate_rule "section"
@@ -3333,6 +3333,8 @@ start_main() {
     # base
     route_table_rule_mark
     create_nft_rules
+    # MTU/MSS tuning after the nft table exists so clamp rules are persisted
+    optimize_interface_mtu_mss
     sing_box_configure_service
 
     # sing-box
@@ -4288,7 +4290,7 @@ optimize_interface_mtu_mss() {
     # IPv4 ICMP overhead: 20 (IP) + 8 (ICMP) = 28; ping -s size means payload bytes
     base_overhead=28
 
-    for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(ppp|tun|wg|vpn|badwan)'); do
+    for iface in $(mtu_mss_target_interfaces); do
         case "$iface" in
         '' | *[!A-Za-z0-9._-]*)
             log "Skipping suspicious interface name for MTU tuning: $iface" "warn"
@@ -4317,19 +4319,43 @@ optimize_interface_mtu_mss() {
                 has_changes=1
             } || log "Failed to set MTU $new_mtu on $iface" "warn"
         fi
+    done
 
-        # Clamp MSS regardless of MTU change to avoid PMTUD black holes
-        nft list chain inet "$NFT_TABLE_NAME" forward 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss" && continue
-        if nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1; then
-            nft add chain inet "$NFT_TABLE_NAME" forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+    apply_interface_mss_clamp
+
+    [ "$has_changes" -eq 0 ] && log "MTU/MSS optimization finished with no changes" "debug"
+}
+
+# Collect interfaces that need TCP MSS clamping (well-known virtual/WAN
+# interface prefixes plus VPN interfaces declared in KROT rules).
+mtu_mss_target_interfaces() {
+    {
+        ip -o link show | awk -F': ' '{print $2}' | grep -E '^(ppp|tun|wg|vpn|badwan)'
+        uci -q show krot 2>/dev/null | sed -n "s/^krot\.[^.]*\.interface='\([^']*\)'$/\1/p"
+    } | sed '/^$/d' | sort -u
+}
+
+# Apply TCP MSS clamp for all target interfaces. Idempotent: existing rules are
+# left untouched. Used both at startup and after nft runtime rebuilds.
+apply_interface_mss_clamp() {
+    local iface
+
+    nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1 || return 0
+
+    nft add chain inet "$NFT_TABLE_NAME" forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
+
+    for iface in $(mtu_mss_target_interfaces); do
+        if ! nft list chain inet "$NFT_TABLE_NAME" forward 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss"; then
             nft add rule inet "$NFT_TABLE_NAME" forward oifname "$iface" tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null && {
-                log "TCP MSS clamp enabled for $iface"
-                has_changes=1
+                log "TCP MSS clamp enabled for $iface (forward)"
+            } || true
+        fi
+        if ! nft list chain inet "$NFT_TABLE_NAME" mangle_output 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss"; then
+            nft insert rule inet "$NFT_TABLE_NAME" mangle_output oifname "$iface" tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null && {
+                log "TCP MSS clamp enabled for $iface (output)"
             } || true
         fi
     done
-
-    [ "$has_changes" -eq 0 ] && log "MTU/MSS optimization finished with no changes" "debug"
 }
 
 parse_generic_string_to_commas_string() {
