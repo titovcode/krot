@@ -8609,6 +8609,10 @@ ensure_fakeip_dns_route_rule() {
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$tag")
     config_get rewrite_ttl "settings" "dns_rewrite_ttl" "60"
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$tag" "rewrite_ttl" "$rewrite_ttl")
+    # FakeIP answers are only usable by LAN clients intercepted via tproxy/dns-in.
+    # Clients entering via mixed inbounds (e.g. phones through the olcRTC tunnel)
+    # cannot route 198.18.0.0/15 and break; let them resolve real IPs instead.
+    config=$(sing_box_cm_patch_dns_route_rule "$config" "$tag" "inbound" "[\"$SB_TPROXY_INBOUND_TAG\",\"$SB_DNS_INBOUND_TAG\"]")
 }
 
 route_rule_has_resolve_matchers() {
