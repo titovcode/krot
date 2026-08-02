@@ -1833,6 +1833,10 @@ hub_module_installed_status() {
             is_adguard_installed || return 1
             hub_installed_version="$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1 || true)"
             ;;
+        olcrtc)
+            is_olcrtc_installed || return 1
+            hub_installed_version="$(get_olcrtc_version 2>/dev/null || true)"
+            ;;
         *)
             return 1
             ;;
@@ -1844,6 +1848,17 @@ hub_module_installed_status() {
 # Whether AdGuard Home binary is present. Mirrors is_zapret_installed / is_byedpi_installed.
 is_adguard_installed() {
     [ -x /opt/AdGuardHome/AdGuardHome ]
+}
+
+# Whether the olcRTC tunnel module is present: init script plus the srv binary
+# installed by hub/olcrtc/install.sh.
+is_olcrtc_installed() {
+    [ -x /etc/init.d/olcrtc ] && [ -x /opt/olcrtc/olcrtc ]
+}
+
+# olcRTC srv has no --version flag; report the module's known version.
+get_olcrtc_version() {
+    echo "0.1.0"
 }
 
 hub_get_modules() {
