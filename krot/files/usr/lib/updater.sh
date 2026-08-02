@@ -1933,7 +1933,6 @@ hub_get_modules() {
                 # Try both ${router_ip} and {{router_ip}} forms.
                 web_url_resolved="${web_url_raw//\$\{router_ip\}/$router_ip}"
                 web_url_resolved="${web_url_resolved//\{\{router_ip\}\}/$router_ip}"
-                web_url_resolved="${web_url_resolved//\\$\\{router_ip\\}/$router_ip}"
                 # Escape for JSON: backslashes, then double quotes
                 web_url_resolved="${web_url_resolved//\\/\\\\}"
                 web_url_resolved="${web_url_resolved//\"/\\\"}"
