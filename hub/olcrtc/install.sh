@@ -140,23 +140,14 @@ if [ -f "$OLC_CONFIG" ] && command -v uci >/dev/null 2>&1; then
         uci -q get "olcrtc.settings.${name}" >/dev/null 2>&1 || uci -q set "olcrtc.settings.${name}=${val}"
     done
 
-    # Route phone tunnel traffic through K.R.O.T.'s mixed inbound (sing-box)
-    # so that routing rules (e.g. MAIN -> AmneziaWG) apply to phone traffic
-    # instead of olcrtc exiting the tunnel directly. Pick the LAN IP and the
-    # first enabled mixed proxy port; only when the user hasn't set one yet.
+    # Route phone tunnel traffic through K.R.O.T.'s service mixed inbound
+    # (127.0.0.1:4534, always created by krot) so that K.R.O.T. routing rules
+    # apply to phone traffic instead of olcrtc exiting the tunnel directly.
+    # Only fills the values when the user hasn't set them explicitly.
     if [ -z "$(uci -q get olcrtc.settings.socks_proxy_addr 2>/dev/null || true)" ] \
         && [ -z "$(uci -q get olcrtc.settings.socks_proxy_port 2>/dev/null || true)" ]; then
-        lan_ip="$(uci -q get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
-        mp_port=""
-        for sec in $(uci -q show krot 2>/dev/null | sed -n 's/^krot\.\([^.]*\)=section$/\1/p'); do
-            [ "$(uci -q get "krot.${sec}.mixed_proxy_enabled" 2>/dev/null || echo 0)" = "1" ] || continue
-            mp_port="$(uci -q get "krot.${sec}.mixed_proxy_port" 2>/dev/null || true)"
-            [ -n "$mp_port" ] && break
-        done
-        if [ -n "$mp_port" ]; then
-            uci -q set "olcrtc.settings.socks_proxy_addr=${lan_ip}"
-            uci -q set "olcrtc.settings.socks_proxy_port=${mp_port}"
-        fi
+        uci -q set "olcrtc.settings.socks_proxy_addr=127.0.0.1"
+        uci -q set "olcrtc.settings.socks_proxy_port=4534"
     fi
 
     uci -q commit olcrtc 2>/dev/null || true
