@@ -9078,7 +9078,7 @@ sing_box_additional_inbounds() {
     log "Configure the additional inbounds of a sing-box JSON configuration"
 
     # The service mixed inbound (127.0.0.1:4534) is always created: Hub modules
-    # (olcRTC tunnel, WLB) and proxied list downloads rely on it. It gets the
+    # (olcRTC tunnel) and proxied list downloads rely on it. It gets the
     # full tproxy rule set so K.R.O.T. rules apply to whatever enters through
     # it; unmatched traffic exits via the download-lists section when set,
     # otherwise via the first outbound section.

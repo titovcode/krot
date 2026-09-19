@@ -433,8 +433,7 @@ function system_info_json() {
         adguard_installed: arg_number(ARGV[11]),
         openwrt_version: as_string(ARGV[12]),
         device_model: as_string(ARGV[13]),
-        generated_at: arg_number(ARGV[14]),
-        wlb_installed: arg_number(ARGV[15])
+        generated_at: arg_number(ARGV[14])
     });
 }
 
