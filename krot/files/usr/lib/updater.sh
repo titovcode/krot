@@ -1865,17 +1865,24 @@ get_olcrtc_version() {
     echo "0.1.0"
 }
 
-# Whether the OpenFlux exit-node module is present: init script plus the
-# module payload (runner) installed by hub/openflux/install.sh. The openflux
-# binary itself is optional (upstream ships no Linux builds), so its absence
-# does not make the module "not installed".
+# Whether the OpenFlux exit-node module is present. The 0.1.x layout kept the
+# runner in /usr/lib/krot-openflux; 0.2.x keeps everything in /opt/openflux.
+# The openflux binary itself is optional (upstream ships no Linux builds), so
+# its absence does not make the module "not installed".
 is_openflux_installed() {
-    [ -x /etc/init.d/krot-openflux ] && [ -x /opt/openflux/openflux-run.sh ]
+    {
+        [ -x /etc/init.d/krot-openflux ] && [ -x /opt/openflux/openflux-run.sh ]
+    } || {
+        [ -x /etc/init.d/krot-openflux ] && [ -x /usr/lib/krot-openflux/openflux-run.sh ]
+    }
 }
 
-# The installer writes the module version to /opt/openflux/VERSION.
+# The installer writes the module version to /opt/openflux/VERSION (0.2.x) or
+# /usr/lib/krot-openflux/VERSION (0.1.x).
 get_openflux_version() {
-    head -n 1 /opt/openflux/VERSION 2>/dev/null || echo "installed"
+    head -n 1 /opt/openflux/VERSION 2>/dev/null \
+        || head -n 1 /usr/lib/krot-openflux/VERSION 2>/dev/null \
+        || echo "installed"
 }
 
 hub_get_modules() {

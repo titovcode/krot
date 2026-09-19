@@ -11,16 +11,19 @@
 #   OF_REPO / OF_BRANCH      GitHub repo with the module (default titovcode/krot)
 #   OF_PAYLOAD_DIR=./files   Local dir with payload files (skip downloading)
 #   OF_BIN_BASE=https://...  Base URL serving openflux-linux-<arch> files
-#   OF_SRC_DIR               Local OpenFlux checkout to build from (dev only)
+#   OF_RELEASE_REPO          Releases to look the binary up in
+#                            (default titovcode/krot, tag openflux-0.1.0)
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.0"
+MODULE_VERSION="0.2.1"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
 OF_BIN_BASE="${OF_BIN_BASE:-}"
-OF_RELEASE_REPO="${OF_RELEASE_REPO:-p1neappleXpress/OpenFlux}"
+OF_RELEASE_REPO="${OF_RELEASE_REPO:-titovcode/krot}"
+OF_TAG="${OF_TAG:-openflux-0.1.0}"
+UPSTREAM_RELEASE_REPO="p1neappleXpress/OpenFlux"
 
 RAW_BASE="https://raw.githubusercontent.com/${OF_REPO}/${OF_BRANCH}/hub/${MODULE_ID}"
 GITHUB_API="https://api.github.com"
@@ -90,6 +93,22 @@ http_download() {
 is_elf() { [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
 
 # ---------------------------------------------------------------------------
+# 0. Migrate/clean leftovers from the 0.1.x LuCI-based layout (0.2.x ships a
+#    standalone web panel at /www/openflux/ and no LuCI integration).
+# ---------------------------------------------------------------------------
+
+cleanup_legacy_layout() {
+    msg "Cleaning up any 0.1.x leftovers..."
+    rm -f /usr/share/luci/menu.d/krot-openflux.json
+    rm -f /usr/share/rpcd/acl.d/krot-openflux.json
+    rm -rf /www/luci-static/resources/view/krot-openflux
+    rm -rf /usr/lib/krot-openflux
+    # Refresh LuCI caches so the stale "OpenFlux Exit Node" menu entry
+    # disappears from K.R.O.T.
+    rm -rf /tmp/luci-indexcache* 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # 1. Binary
 # ---------------------------------------------------------------------------
 
@@ -116,7 +135,7 @@ install_binary() {
         cp /tmp/openflux "$OF_BIN" && chmod 0755 "$OF_BIN"
         return 0
     fi
-    if [ -d "$OF_PAYLOAD_DIR/bin" ] && [ -f "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" ]; then
+    if [ -f "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" ]; then
         msg "Installing binary from payload..."
         mkdir -p "$OF_DIR"
         cp "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" "$OF_BIN"
@@ -124,65 +143,62 @@ install_binary() {
         return 0
     fi
 
-    local ok=0 base url
+    local base url
+
+    # Path 1: custom bin_base (UCI or env), or a pinned release in the module
+    # repo — same pattern as the olcRTC module. The pinned tag exists only in
+    # titovcode/krot; upstream OpenFlux ships no Linux binaries yet.
     if [ -n "$OF_BIN_BASE" ]; then
         base="${OF_BIN_BASE%/}"
     else
-        base="https://github.com/${OF_RELEASE_REPO}/releases/latest/download"
+        base="https://github.com/${OF_RELEASE_REPO}/releases/download/${OF_TAG}"
     fi
     url="${base}/openflux-linux-${BIN_LABEL}"
     msg "Architecture: $ARCH (label: $BIN_LABEL)"
-    msg "Trying ${url} ..."
+    msg "Downloading openflux from ${url} ..."
     if http_download "$url" "$OF_TMP/openflux" 2>/dev/null && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
         mkdir -p "$OF_DIR"
         mv "$OF_TMP/openflux" "$OF_BIN"
         chmod 0755 "$OF_BIN"
-        msg "installed openflux (direct asset)"
+        msg "installed openflux (pinned release)"
         return 0
     fi
 
-    # Scan upstream releases for a matching asset name.
-    if [ -z "$OF_BIN_BASE" ]; then
-        msg "Fetching ${OF_RELEASE_REPO} releases..."
-        local release_json asset_url
-        release_json="$(http_get "${GITHUB_API}/repos/${OF_RELEASE_REPO}/releases?per_page=20")" || release_json=""
-        asset_url="$(printf '%s\n' "$release_json" 2>/dev/null \
-            | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
-            | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
-        if [ -n "$asset_url" ]; then
-            msg "Downloading $(basename "$asset_url")..."
-            if http_download "$asset_url" "$OF_TMP/openflux" && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
-                mkdir -p "$OF_DIR"
-                mv "$OF_TMP/openflux" "$OF_BIN"
-                chmod 0755 "$OF_BIN"
-                msg "installed openflux (from release)"
-                return 0
-            fi
+    # Path 2: scan the upstream OpenFlux releases for a matching asset name
+    # (in case Linux assets get published there).
+    msg "Scanning ${UPSTREAM_RELEASE_REPO} releases for a Linux binary..."
+    local release_json asset_url
+    release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20")" || release_json=""
+    asset_url="$(printf '%s\n' "$release_json" 2>/dev/null \
+        | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
+        | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+    if [ -n "$asset_url" ]; then
+        msg "Downloading $(basename "$asset_url")..."
+        if http_download "$asset_url" "$OF_TMP/openflux" && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
+            mkdir -p "$OF_DIR"
+            mv "$OF_TMP/openflux" "$OF_BIN"
+            chmod 0755 "$OF_BIN"
+            msg "installed openflux (upstream release)"
+            return 0
         fi
     fi
 
-    warn "No openflux-linux-${BIN_LABEL} binary available."
-    warn "The module will install, but the service stays stopped until you provide"
-    warn "the binary. Build it with: hub/${MODULE_ID}/build-binaries.sh (needs Go),"
-    warn "then either:"
-    warn "  - set 'bin_base' on the module web panel (http://<router-ip>/openflux/)"
-    warn "    to a URL serving openflux-linux-${BIN_LABEL} and press Update, or"
-    warn "  - copy the binary: scp openflux-linux-${BIN_LABEL} root@<router-ip>:/tmp/openflux"
-    warn "    and run the install again (it picks /tmp/openflux up)."
+    warn "No openflux-linux-${BIN_LABEL} binary could be downloaded automatically."
+    warn "The module is installed, but the service will stay stopped until the"
+    warn "binary is in place. Options:"
+    warn "  1. Build it: hub/${MODULE_ID}/build-binaries.sh (needs Go), then copy"
+    warn "     scp openflux-linux-${BIN_LABEL} root@<router-ip>:/tmp/openflux"
+    warn "     and run the install again (it picks /tmp/openflux up), or"
+    warn "  2. Host the binary at a URL and set bin_base on the web panel"
+    warn "     (http://<router-ip>/openflux/), then press Update."
+    warn "Issue #44 places the binary at /usr/bin/openflux built from source"
+    warn "(see https://github.com/p1neappleXpress/OpenFlux/issues/44)."
     return 0
 }
 
 # ---------------------------------------------------------------------------
 # 2. UCI config (only on first install; existing config is preserved)
 # ---------------------------------------------------------------------------
-
-gen_hex() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex "$1" 2>/dev/null
-    else
-        head -c "$1" /dev/urandom 2>/dev/null | hexdump -ve '1/1 "%02x"'
-    fi
-}
 
 install_config() {
     if [ -f "$OF_CONFIG" ]; then
@@ -198,9 +214,9 @@ config settings 'settings'
 	option use_iptables '0'
 	option suppress_rst '1'
 
-# One instance = one running openflux exit node. Add another instance for
-# another transport/URL pair. Clients (OpenFluxAndroid) choose a server by
-# transport + url combination, so different instances serve different phones.
+# One instance = one running openflux exit node = one phone (one Yandex doc).
+# Add another instance (and another Yandex doc) for every additional phone,
+# see issue #44 "one link = one device".
 #
 #config instance 'phone1'
 #	option enabled '1'
@@ -224,9 +240,9 @@ EOF
 # ---------------------------------------------------------------------------
 
 install_webpanel() {
-    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/www/openflux/index.html" ]; then
+    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/www/index.html" ]; then
         mkdir -p "$OF_WWW"
-        cp "$OF_PAYLOAD_DIR/www/openflux/index.html" "$OF_WWW/index.html"
+        cp "$OF_PAYLOAD_DIR/www/index.html" "$OF_WWW/index.html"
     else
         mkdir -p "$OF_WWW"
         http_download "${RAW_BASE}/www/index.html" "$OF_WWW/index.html" \
@@ -250,7 +266,7 @@ install_cgi() {
 #!/bin/sh
 # CGI backend for the OpenFlux web panel (uhttpd /cgi-bin/openflux).
 # Actions: status | restart | save_settings | save_instance | del_instance
-# uhttpd passes the POST body on stdin; CONTENT_LENGTH is in the environment.
+# uhttpd passes the POST body on stdin (application/x-www-form-urlencoded).
 export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
 . /lib/functions.sh
 
@@ -260,15 +276,27 @@ GEN_STATE="/opt/openflux/gen-state.sh"
 
 emit() { printf 'Content-Type: application/json\r\n\r\n%s\n' "$1"; }
 
-# Read the POST body and split into ACTION / PAYLOAD (JSON, URL-decoded).
+# Minimal URL-decoder (busybox sh; keeps + as space, resolves %XX).
+urldecode() {
+    printf '%s' "$1" \
+        | sed 's/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g' \
+        | while IFS= read -r -d '' 2>/dev/null || IFS= read -r line; do printf '%b' "$line"; done \
+        2>/dev/null
+}
+
+urldecode() {
+    # POSIX-safe variant: percent-decode via printf '%b' on a \x-escaped string.
+    printf '%b' "$(printf '%s' "$1" | sed 's/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g; s/+/ /g')"
+}
+
 QUERY_STRING="$(cat 2>/dev/null)"
 ACTION=""
 PAYLOAD=""
 for kv in $(printf '%s' "$QUERY_STRING" | tr '&' ' '); do
     key="${kv%%=*}"
     val="${kv#*=}"
-    key="$(printf '%s' "$key" | ucode -e 'let s = ARGV[1] ?? ""; let out = ""; for (let i = 0; i < length(s); i++) { let c = substr(s, i, 1); if (c == "+") out &= " "; else if (c == "%") { out &= chr(str_to_num("0x" & substr(s, i+1, 2), 16) ?: 0); i += 2; } else out &= c; } print(out);' "$key" 2>/dev/null)"
-    val="$(printf '%s' "$val" | ucode -e 'let s = ARGV[1] ?? ""; let out = ""; for (let i = 0; i < length(s); i++) { let c = substr(s, i, 1); if (c == "+") out &= " "; else if (c == "%") { out &= chr(str_to_num("0x" & substr(s, i+1, 2), 16) ?: 0); i += 2; } else out &= c; } print(out);' "$val" 2>/dev/null)"
+    key="$(urldecode "$key")"
+    val="$(urldecode "$val")"
     case "$key" in
         action) ACTION="$val" ;;
         payload) PAYLOAD="$val" ;;
@@ -288,8 +316,8 @@ case "$ACTION" in
     status)
         svc="$("$INIT" status 2>/dev/null || echo stopped)"
         case "$svc" in
-            *running*) emit '{"status":"running"}' ;;
-            *) emit '{"status":"stopped"}' ;;
+            *running*) emit "{\"status\":\"running\",\"bin\":$([ -x /opt/openflux/openflux ] && echo true || echo false)}" ;;
+            *) emit "{\"status\":\"stopped\",\"bin\":$([ -x /opt/openflux/openflux ] && echo true || echo false)}" ;;
         esac
         ;;
     restart)
@@ -360,7 +388,10 @@ CGISH
 # ---------------------------------------------------------------------------
 
 install_runner() {
-    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/usr/lib/krot-openflux/openflux-run.sh" ]; then
+    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/files/usr/lib/krot-openflux/openflux-run.sh" ]; then
+        mkdir -p "$OF_DIR"
+        cp "$OF_PAYLOAD_DIR/files/usr/lib/krot-openflux/openflux-run.sh" "$OF_DIR/openflux-run.sh"
+    elif [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/usr/lib/krot-openflux/openflux-run.sh" ]; then
         mkdir -p "$OF_DIR"
         cp "$OF_PAYLOAD_DIR/usr/lib/krot-openflux/openflux-run.sh" "$OF_DIR/openflux-run.sh"
     else
@@ -445,23 +476,7 @@ json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\000-\010\013\014\016-\037'
 }
 
-OUT="/www/openflux/state.js.tmp"
-{
-    printf 'window.OPENFLUX = { instances: ['
-    first=1
-    config_foreach openflux_instance instance
-    printf ' ], settings: { bin_base: "'
-    printf '%s' "$(json_escape "$(uci -q get krot_openflux.settings.bin_base 2>/dev/null)")"
-    printf '", use_iptables: "'
-    printf '%s' "$(uci -q get krot_openflux.settings.use_iptables 2>/dev/null || echo 0)"
-    printf '", suppress_rst: "'
-    printf '%s' "$(uci -q get krot_openflux.settings.suppress_rst 2>/dev/null || echo 1)"
-    printf '" } };\n'
-} > "$OUT"
-
-mv "$OUT" "$STATE_JS"
-chmod 0644 "$STATE_JS"
-
+# Functions must be declared BEFORE config_foreach uses them.
 instance_json() {
     local section="$1"
     local enabled label transport exit_mode url max_token max_uid listen_port codec local_ip debug
@@ -492,6 +507,25 @@ instance_json() {
         "$(json_escape "$local_ip")" \
         "$(json_escape "$debug")"
 }
+
+OUT="/www/openflux/state.js.tmp"
+{
+    printf 'window.OPENFLUX = { arch: "'
+    printf '%s' "$(uname -m | json_escape)"
+    printf '", bin_present: %s, instances: [' "$([ -x /opt/openflux/openflux ] && echo true || echo false)"
+    first=1
+    config_foreach instance_json instance
+    printf ' ], settings: { bin_base: "'
+    printf '%s' "$(json_escape "$(uci -q get krot_openflux.settings.bin_base 2>/dev/null)")"
+    printf '", use_iptables: "'
+    printf '%s' "$(uci -q get krot_openflux.settings.use_iptables 2>/dev/null || echo 0)"
+    printf '", suppress_rst: "'
+    printf '%s' "$(uci -q get krot_openflux.settings.suppress_rst 2>/dev/null || echo 1)"
+    printf '" } };\n'
+} > "$OUT"
+
+mv "$OUT" "$STATE_JS"
+chmod 0644 "$STATE_JS"
 GENSH
     chmod 0755 "$OF_DIR/gen-state.sh"
 }
@@ -501,6 +535,7 @@ GENSH
 # ---------------------------------------------------------------------------
 
 install_config
+cleanup_legacy_layout
 install_webpanel
 install_cgi
 install_runner
@@ -524,7 +559,11 @@ msg "Web panel:   http://${ROUTER_IP}/openflux/"
 msg "Config:      $OF_CONFIG"
 msg "Service:     /etc/init.d/krot-openflux start|stop|restart"
 msg ""
-msg "If no openflux binary was found, build it with hub/${MODULE_ID}/build-binaries.sh"
-msg "and either set bin_base on the panel and press Update, or copy it to $OF_BIN"
-msg "and restart the service."
+if [ -x "$OF_BIN" ]; then
+    msg "openflux binary: $OF_BIN"
+else
+    msg "openflux binary is MISSING — the service stays stopped until it is in place."
+    msg "Build it with hub/${MODULE_ID}/build-binaries.sh and copy to ${OF_BIN},"
+    msg "or host it and set bin_base on the web panel, then press Update."
+fi
 msg ""

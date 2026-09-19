@@ -20,12 +20,21 @@ command -v iptables >/dev/null 2>&1 && iptables -t filter -X KROT_OPENFLUX 2>/de
 # Make sure no runner/openflux process survives.
 pkill -f 'openflux-run.sh' 2>/dev/null || true
 pkill -f '(^|/)openflux --role=exit' 2>/dev/null || true
+pkill -f '/usr/bin/openflux' 2>/dev/null || true
 
 msg "Removing module files..."
 rm -f /etc/init.d/krot-openflux
+rm -f /www/cgi-bin/openflux
 rm -rf /opt/openflux
 rm -rf /etc/openflux
 rm -rf /www/openflux
+
+# 0.1.x layout leftovers (LuCI menu/acl/view, old payload dir).
+rm -f /usr/share/luci/menu.d/krot-openflux.json
+rm -f /usr/share/rpcd/acl.d/krot-openflux.json
+rm -rf /www/luci-static/resources/view/krot-openflux
+rm -rf /usr/lib/krot-openflux
+rm -rf /tmp/luci-indexcache* 2>/dev/null || true
 
 if [ "${OF_PURGE:-0}" = "1" ]; then
     msg "Purging config..."

@@ -9,75 +9,68 @@ Mail.ru Docs) на роутер, а роутер выпускает его в и
 Upstream-проект: <https://github.com/p1neappleXpress/OpenFlux>
 Как это работает у автора: <https://github.com/p1neappleXpress/OpenFlux/issues/44>
 
+Модуль устроен как `hub/olcrtc`: собственная веб-панель на роутере
+(http://<router-ip>/openflux/), без пункта в LuCI-меню, без ACL и rpcd.
+
 ## Установка
 
-1. K.R.O.T. → Hub → **OpenFlux Exit Node** → Install.
-2. Перелогиниться в LuCI (обновятся меню и ACL).
-3. Открыть **Services → OpenFlux**.
+1. K.R.O.T. → Updates → Hub → **OpenFlux Exit Node** → Install.
+2. Открыть **http://<router-ip>/openflux/** — никаких перелогинов не нужно
+   (rpcd не перезапускается, LuCI-сессия не страдает).
 
-## Сборка бинарника
+## Бинарник
 
-Upstream публикует сборки только для Android/iOS; Linux-бинарник собирается
-из исходников (Go). Два пути:
+Порядок поиска бинарника при установке/обновлении:
 
-- На машине разработки:
-  `sh hub/openflux/build-binaries.sh [amd64|arm64|armv7|armv6|mipsle|mips|mips64le|all]`
-  — скрипт клонирует upstream в `hub/openflux/OpenFlux`, собирает статические
-  бинарники в `hub/openflux/dist/`.
-- Разместить `dist/openflux-linux-<arch>` где-нибудь по HTTPS и вписать адрес в
-  LuCI → Services → OpenFlux → Settings → **bin_base** (или
-  `uci set krot_openflux.settings.bin_base='https://...'`).
-- Либо скопировать бинарник напрямую на роутер:
-  `scp dist/openflux-linux-arm64 root@router:/usr/lib/krot-openflux/bin/openflux`
+1. Уже установленный `/opt/openflux/openflux` — пропускается.
+2. `/tmp/openflux` — вручную положенный бинарник (как в issue #44: собрать из
+   исходников, `scp -O openflux root@<router>:/tmp/openflux`, запустить install
+   ещё раз).
+3. Пейлоад модуля `files/bin/openflux-linux-<arch>`.
+4. Пиннутый релиз `titovcode/krot` (тег `openflux-0.1.0`) — как у olcrtc.
+5. Релизы upstream `p1neappleXpress/OpenFlux` (Linux-сборки там пока не
+   публикуются).
 
-Установщик при отсутствии бинарника оставит сервис остановленным и покажет
-подсказку; после установки бинарника достаточно нажать **Restart** на странице
-модуля.
+Ручной путь (issue #44): собрать `openflux-linux-<arch>` скриптом
+`hub/openflux/build-binaries.sh`, положить на роутер в `/opt/openflux/openflux`
+(`chmod +x`) и рестартнуть сервис. Либо выложить по HTTPS и указать `bin_base`
+на панели, затем нажать Update.
 
-## Настройка
+## Настройка (веб-панель)
 
-- **Transport** — `yandex` / `vyandex` / `oneme` / `cupsonline` / `mailru`.
-  Для `yandex|vyandex|mailru` нужен URL документа; для `oneme` — `max_token`
-  и `max_uid`; для `cupsonline` — base64-список комнат, который печатает
-  exit-нода при запуске.
-- **Exit mode**:
-  - `l3` — сырой SNAT/DNAT, одно TCP-соединение end-to-end, быстрее; нужен root
-    (на OpenWrt он есть). Роутер сам ставит правило подавления kernel-RST
-    (nftables `krot_openflux`, либо iptables при `use_iptables=1`).
-  - `l4` — gVisor-прокси без root, двойная терминация TCP, медленнее.
-- **codec** (`batched`|`legacy`) — должен совпадать с кодеком клиента
-  (OpenFluxAndroid).
-- **encryption_key** — опциональный общий секрет AES-256-GCM (обе стороны).
-
-## Ограничения
-
-- Один инстанс = один транспорт+URL; клиенты выбирают пару «транспорт + url»,
-  поэтому разные телефоны = разные инстансы.
-- В `l3` режиме egress IP лучше зафиксировать (`local_ip`), чтобы RST-фильтр
-  был прицельным, а не общесистемным.
+- **bin_base** — URL с `openflux-linux-<arch>`; пусто = пиннутый релиз.
+- **Подавление kernel-RST** — в l3 ядро шлёт RST на чужие соединения и рвёт
+  туннель (issue #44); модуль ставит nft-таблицу `krot_openflux` (или
+  iptables-цепочку `KROT_OPENFLUX` при `use_iptables=1`).
+- **Инстансы** — один инстанс = один транспорт+URL = один телефон
+  (issue #44: «одна ссылка = одно устройство»). Для второго телефона — вторая
+  ссылка и второй инстанс.
+- На Android отключите Private DNS: OpenFlux пропускает только TCP, UDP/53 и
+  DoT не маскируются.
 
 ## Диагностика
 
-- `logread -e krot-openflux`
+- `logread -e krot-openflux` (сервис), `logread -e openflux` (сам openflux)
 - `/etc/init.d/krot-openflux status`
-- `ubus call service list | jsonfilter -e '@["krot-openflux"]'`
-- Состояние RST-фильтра: `nft list table ip krot_openflux`
-  (или `iptables -nL KROT_OPENFLUX`)
+- Панель: http://<router-ip>/openflux/ (автообновление каждые 5с)
+- RST-фильтр: `nft list table ip krot_openflux` (или `iptables -nL KROT_OPENFLUX`)
 
 ## Локальное тестирование без пуша
 
 ```
 scp -r hub/openflux root@router:/tmp/openflux
-ssh root@router 'cd /tmp/openflux && OF_PAYLOAD_DIR=./files sh install.sh'
+ssh root@router 'cd /tmp/openflux && OF_PAYLOAD_DIR=. sh install.sh'
 ```
 
-## Структура модуля
+## Структура модуля (0.2.x)
 
 | Путь | Назначение |
 |---|---|
 | `/etc/config/krot_openflux` | UCI: settings + instance-секции |
 | `/etc/init.d/krot-openflux` | procd-сервис (respawn, рестарт по смене конфига) |
-| `/usr/lib/krot-openflux/bin/openflux` | бинарник exit-ноды |
-| `/usr/lib/krot-openflux/openflux-run.sh` | runner: валидация, RST-фильтр, запуск CLI |
-| `/etc/krot-openflux/` | state (ключи шифрования, root-only) |
-| LuCI: Services → OpenFlux | страница модуля |
+| `/opt/openflux/openflux` | бинарник exit-ноды |
+| `/opt/openflux/openflux-run.sh` | runner: валидация, RST-фильтр, запуск CLI |
+| `/opt/openflux/gen-state.sh` | перегенерация `/www/openflux/state.js` |
+| `/www/openflux/` | веб-панель (index.html + state.js) |
+| `/www/cgi-bin/openflux` | CGI-бэкенд панели (status/restart/save) |
+| `/etc/openflux/` | state (ключи шифрования, root-only) |

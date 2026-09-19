@@ -188,14 +188,27 @@
   }
 
   function render(data, svc) {
+    if (data.arch) {
+      Array.prototype.forEach.call(document.querySelectorAll('.arch'), function (el) {
+        el.textContent = data.arch;
+      });
+    }
     var badge = document.getElementById('svc-badge');
     var running = /running/.test(svc || '');
-    badge.textContent = svc || 'stopped';
-    badge.className = 'badge ' + (running ? 'ok' : 'err');
+    var binPresent = data.bin_present === true;
+    badge.textContent = svc + (binPresent ? '' : ' (нет бинарника)');
+    badge.className = 'badge ' + (binPresent ? (running ? 'ok' : 'warn') : 'err');
 
-    document.getElementById('set-bin_base').value = (data.settings && data.settings.bin_base) || '';
-    document.getElementById('set-suppress_rst').value = String((data.settings && data.settings.suppress_rst) || '1');
-    document.getElementById('set-use_iptables').value = String((data.settings && data.settings.use_iptables) || '0');
+    var binBaseEl = document.getElementById('set-bin_base');
+    if (document.activeElement !== binBaseEl) {
+      binBaseEl.value = (data.settings && data.settings.bin_base) || '';
+    }
+    if (document.activeElement !== document.getElementById('set-suppress_rst')) {
+      document.getElementById('set-suppress_rst').value = String((data.settings && data.settings.suppress_rst) || '1');
+    }
+    if (document.activeElement !== document.getElementById('set-use_iptables')) {
+      document.getElementById('set-use_iptables').value = String((data.settings && data.settings.use_iptables) || '0');
+    }
 
     var rows = document.getElementById('inst-rows');
     rows.innerHTML = '';
@@ -333,6 +346,15 @@
   });
 
   refresh();
+
+  // Auto-refresh every 5s while no modal is open and no field is focused
+  // (so the table stays live but user edits are never clobbered).
+  var autoTimer = setInterval(function () {
+    if (document.querySelector('.modal-back')) return;
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) return;
+    refresh();
+  }, 5000);
 })();
 </script>
 </body>
