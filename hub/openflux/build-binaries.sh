@@ -13,7 +13,9 @@
 set -e
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="${OF_SRC_DIR:-$HERE/OpenFlux}"
+# Prefer the local checkout next to the repo root (as in this workspace);
+# fall back to cloning upstream.
+SRC_DIR="${OF_SRC_DIR:-$(ls -d "$HERE/../OpenFlux-main" 2>/dev/null || echo "$HERE/OpenFlux")}"
 OUT_DIR="${OF_OUT_DIR:-$HERE/dist}"
 
 clone_or_update_src() {
@@ -54,10 +56,16 @@ build_target() {
 }
 
 command -v go >/dev/null 2>&1 || { echo "Go is required (see https://go.dev/dl/)." >&2; exit 1; }
-command -v git >/dev/null 2>&1 || { echo "git is required." >&2; exit 1; }
 
 mkdir -p "$OUT_DIR"
-clone_or_update_src
+
+# A pre-existing source checkout (e.g. OpenFlux-main without .git) is used as
+# is; only clone/update when the dir is empty or missing.
+if [ -d "$SRC_DIR" ] && [ -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]; then
+    echo "==> using sources from $SRC_DIR"
+else
+    clone_or_update_src
+fi
 
 TARGET="${1:-all}"
 if [ "$TARGET" = "all" ]; then
@@ -69,5 +77,8 @@ else
 fi
 
 echo ""
-echo "Done. Upload dist/openflux-linux-* to a host and set bin_base, e.g.:"
+echo "Done. To publish the binaries to the module (pinned release pattern):"
+echo "  gh release create openflux-0.1.0 --repo titovcode/krot --prerelease \\"
+echo "      --title 'OpenFlux 0.1.0 - module binaries' dist/openflux-linux-*"
+echo "Or host them anywhere and set bin_base:"
 echo "  uci set krot_openflux.settings.bin_base='https://example.com/my-builds'"
