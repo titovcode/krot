@@ -133,53 +133,71 @@ install_binary() {
         msg "Installing manually placed binary from /tmp/openflux..."
         mkdir -p "$OF_DIR"
         cp /tmp/openflux "$OF_BIN" && chmod 0755 "$OF_BIN"
+        msg "installed openflux (from /tmp/openflux)"
         return 0
     fi
-    if [ -f "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" ]; then
+    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" ]; then
         msg "Installing binary from payload..."
         mkdir -p "$OF_DIR"
         cp "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" "$OF_BIN"
         chmod 0755 "$OF_BIN"
+        msg "installed openflux (from payload)"
         return 0
     fi
 
-    local base url
-
-    # Path 1: custom bin_base (UCI or env), or a pinned release in the module
-    # repo — same pattern as the olcRTC module. The pinned tag exists only in
-    # titovcode/krot; upstream OpenFlux ships no Linux binaries yet.
+    # Read bin_base from UCI config if not set via environment.
+    # This makes "Update" in the web panel actually work: the panel saves
+    # bin_base to /etc/config/krot_openflux, and update.sh re-runs install.sh,
+    # which must pick it up here.
+    local uci_bin_base=""
+    if command -v uci >/dev/null 2>&1 && [ -f "$OF_CONFIG" ]; then
+        uci_bin_base="$(uci -q get krot_openflux.settings.bin_base 2>/dev/null || true)"
+    fi
+    local base=""
     if [ -n "$OF_BIN_BASE" ]; then
         base="${OF_BIN_BASE%/}"
+    elif [ -n "$uci_bin_base" ]; then
+        base="${uci_bin_base%/}"
     else
         base="https://github.com/${OF_RELEASE_REPO}/releases/download/${OF_TAG}"
     fi
-    url="${base}/openflux-linux-${BIN_LABEL}"
+
+    local url="${base}/openflux-linux-${BIN_LABEL}"
     msg "Architecture: $ARCH (label: $BIN_LABEL)"
     msg "Downloading openflux from ${url} ..."
-    if http_download "$url" "$OF_TMP/openflux" 2>/dev/null && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
-        mkdir -p "$OF_DIR"
-        mv "$OF_TMP/openflux" "$OF_BIN"
-        chmod 0755 "$OF_BIN"
-        msg "installed openflux (pinned release)"
-        return 0
+    if http_download "$url" "$OF_TMP/openflux" 2>/dev/null && [ -s "$OF_TMP/openflux" ]; then
+        if is_elf "$OF_TMP/openflux"; then
+            mkdir -p "$OF_DIR"
+            mv "$OF_TMP/openflux" "$OF_BIN"
+            chmod 0755 "$OF_BIN"
+            msg "installed openflux (downloaded from ${base})"
+            return 0
+        else
+            rm -f "$OF_TMP/openflux"
+            warn "Downloaded file is not an ELF binary (probably a 404 page)."
+        fi
+    else
+        warn "Download failed or file is empty."
     fi
 
     # Path 2: scan the upstream OpenFlux releases for a matching asset name
     # (in case Linux assets get published there).
     msg "Scanning ${UPSTREAM_RELEASE_REPO} releases for a Linux binary..."
     local release_json asset_url
-    release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20")" || release_json=""
-    asset_url="$(printf '%s\n' "$release_json" 2>/dev/null \
-        | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
-        | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
-    if [ -n "$asset_url" ]; then
-        msg "Downloading $(basename "$asset_url")..."
-        if http_download "$asset_url" "$OF_TMP/openflux" && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
-            mkdir -p "$OF_DIR"
-            mv "$OF_TMP/openflux" "$OF_BIN"
-            chmod 0755 "$OF_BIN"
-            msg "installed openflux (upstream release)"
-            return 0
+    release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20" 2>/dev/null)" || release_json=""
+    if [ -n "$release_json" ]; then
+        asset_url="$(printf '%s\n' "$release_json" \
+            | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
+            | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+        if [ -n "$asset_url" ]; then
+            msg "Downloading $(basename "$asset_url")..."
+            if http_download "$asset_url" "$OF_TMP/openflux" && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
+                mkdir -p "$OF_DIR"
+                mv "$OF_TMP/openflux" "$OF_BIN"
+                chmod 0755 "$OF_BIN"
+                msg "installed openflux (upstream release)"
+                return 0
+            fi
         fi
     fi
 
@@ -243,12 +261,15 @@ install_webpanel() {
     if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/www/index.html" ]; then
         mkdir -p "$OF_WWW"
         cp "$OF_PAYLOAD_DIR/www/index.html" "$OF_WWW/index.html"
+        [ -f "$OF_PAYLOAD_DIR/www/qrcode.js" ] && cp "$OF_PAYLOAD_DIR/www/qrcode.js" "$OF_WWW/qrcode.js"
     else
         mkdir -p "$OF_WWW"
         http_download "${RAW_BASE}/www/index.html" "$OF_WWW/index.html" \
             || fail "Failed to download the web panel (does your repo contain hub/${MODULE_ID}/www/index.html?)"
+        http_download "${RAW_BASE}/www/qrcode.js" "$OF_WWW/qrcode.js" 2>/dev/null || true
     fi
     chmod 0644 "$OF_WWW/index.html"
+    [ -f "$OF_WWW/qrcode.js" ] && chmod 0644 "$OF_WWW/qrcode.js"
 
     cat > "$OF_WWW/state.js" <<'SH'
 window.OPENFLUX = { instances: [], settings: {} };
@@ -472,9 +493,12 @@ STATE_JS="/www/openflux/state.js"
 mkdir -p "$(dirname "$STATE_JS")"
 
 json_escape() {
-    # JSON-escape: backslash, quote, control chars are the practical minimum.
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\000-\010\013\014\016-\037'
+    # JSON-escape: backslash, quote, and control chars that break JSON strings.
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g' | tr -d '\000-\010\013\014\016-\037'
 }
+
+# Track whether we already printed one array element (for comma separation).
+first=1
 
 # Functions must be declared BEFORE config_foreach uses them.
 instance_json() {
@@ -505,7 +529,8 @@ instance_json() {
         "$(json_escape "$listen_port")" \
         "$(json_escape "$codec")" \
         "$(json_escape "$local_ip")" \
-        "$(json_escape "$debug")"
+        "$(json_escape "$debug")" \
+        "$([ "$enabled" -eq 1 ] && echo true || echo false)"
 }
 
 OUT="/www/openflux/state.js.tmp"

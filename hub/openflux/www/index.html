@@ -8,354 +8,134 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px 20px 60px;
+    margin: 0; padding: 24px 20px 40px;
     background: #0f1115; color: #e6e8eb;
     font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    font-size: 14px;
+    display: flex; flex-direction: column; align-items: center;
   }
   h1 { font-size: 22px; margin: 4px 0 8px; }
-  h2 { font-size: 16px; margin: 28px 0 10px; }
-  .sub { color: #9aa3ae; font-size: 14px; max-width: 560px; margin: 0 0 16px; }
-  .card {
-    background: #161a22; border: 1px solid #2c3340; border-radius: 12px;
-    padding: 16px; max-width: 640px; margin: 0 0 16px;
-  }
-  .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
-  label { color: #9aa3ae; min-width: 150px; font-size: 13px; }
-  input[type=text] {
+  .sub { color: #9aa3ae; font-size: 14px; text-align: center; max-width: 480px; margin: 0 0 20px; }
+  #qr { background: #fff; padding: 14px; border-radius: 12px; margin: 0 0 20px; }
+  .link {
     background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
-    color: #e6e8eb; padding: 8px 10px; font-size: 13px; width: 100%;
-    max-width: 380px; font-family: inherit;
-  }
-  select {
-    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
-    color: #e6e8eb; padding: 8px 10px; font-size: 13px; width: 100%;
-    max-width: 280px;
+    padding: 10px 12px; font-size: 12px; word-break: break-all;
+    max-width: 480px; text-align: center; margin-bottom: 12px;
   }
   button {
     background: #3b82f6; color: #fff; border: 0; border-radius: 8px;
-    padding: 9px 16px; font-size: 13px; cursor: pointer;
+    padding: 10px 18px; font-size: 14px; cursor: pointer; margin-bottom: 28px;
   }
-  button.secondary { background: #2c3340; }
-  button.danger { background: #b3403a; }
-  table { width: 100%; max-width: 720px; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #242a35; font-size: 13px; }
-  th { color: #9aa3ae; font-weight: 600; }
-  .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px;
-    background: rgba(128,128,128,0.2);
-  }
-  .badge.ok { background: rgba(55,169,105,0.2); }
-  .badge.warn { background: rgba(221,160,44,0.2); }
-  .badge.off { background: rgba(128,128,128,0.2); }
-  .badge.err { background: rgba(200,60,60,0.2); }
-  .hint { color: #8a929c; font-size: 12px; line-height: 1.5; }
+  .steps { max-width: 480px; font-size: 14px; line-height: 1.6; color: #c9d0d8; }
+  .steps b { color: #fff; }
   code { color: #8fd3ff; }
-  a { color: #8fd3ff; }
-  ol { color: #c9d0d8; line-height: 1.7; max-width: 560px; }
-  .modal-back {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    display: flex; align-items: center; justify-content: center; z-index: 50;
+  .status {
+    display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 13px;
+    margin-bottom: 16px; background: rgba(128,128,128,0.2);
   }
-  .modal {
-    background: #161a22; border: 1px solid #2c3340; border-radius: 12px;
-    padding: 20px; width: min(520px, calc(100vw - 32px)); max-height: 90vh; overflow: auto;
-  }
-  .toast {
-    position: fixed; right: 16px; bottom: 16px; z-index: 99; margin: 0;
+  .status.ok { background: rgba(55,169,105,0.25); color: #37a169; }
+  .status.warn { background: rgba(221,160,44,0.25); color: #dda02c; }
+  .status.err { background: rgba(200,60,60,0.25); color: #d06060; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+    background: #2c3340; margin-left: 8px;
   }
 </style>
 </head>
 <body>
   <h1>OpenFlux Exit Node</h1>
-  <p class="sub">Выходная нода OpenFlux на роутере. Телефон с приложением <b>OpenFluxAndroid</b> туннелирует трафик через разрешённые транспорты (Yandex Docs/Volga, MAX, Cups.online, Mail.ru) на роутер и выходит через его WAN.</p>
+  <p class="sub">Выходная нода OpenFlux на роутере. Телефон с приложением <b>OpenFluxAndroid</b> туннелирует трафик через разрешённые транспорты и выходит через WAN этого роутера.</p>
 
-  <div class="card row">
-    <span id="svc-badge" class="badge">…</span>
-    <button id="btn-restart">Перезапустить сервис</button>
-    <span class="hint">Логи: <code>logread -e krot-openflux</code></span>
+  <div id="status" class="status">Загрузка...</div>
+
+  <div id="qr" style="display:none"></div>
+  <div class="link" id="link" style="display:none"><code id="link-text"></code></div>
+  <button id="btn-copy" style="display:none" onclick="copyLink()">Копировать ссылку</button>
+
+  <div class="steps" id="steps" style="display:none">
+    <p><b>1.</b> Установи <code>OpenFluxAndroid</code> на телефон.</p>
+    <p><b>2.</b> В приложении: Добавить — по QR/скан — отсканируй код выше (достаточно один раз, дома).</p>
+    <p><b>3.</b> Нажми «Подключить». Работает в любой сети, где доступен выбранный транспорт.</p>
   </div>
 
-  <h2>Настройки</h2>
-  <div class="card">
-    <div class="row">
-      <label for="set-bin_base">bin_base</label>
-      <input type="text" id="set-bin_base" placeholder="https://example.com/openflux-builds">
-    </div>
-    <p class="hint">URL, где лежат <code>openflux-linux-<span class="arch"></span></code> файлы. Пусто = попытка скачать из релизов upstream (Linux-сборки там пока не публикуются). Соберите бинарник скриптом <code>hub/openflux/build-binaries.sh</code> и выложите.</p>
-    <div class="row">
-      <label for="set-suppress_rst">Подавление kernel-RST</label>
-      <select id="set-suppress_rst">
-        <option value="1">включено (рекомендуется для l3)</option>
-        <option value="0">отключено</option>
-      </select>
-    </div>
-    <p class="hint">В l3-режиме ядро шлёт TCP RST на чужие соединения и рвёт туннель (см. <a href="https://github.com/p1neappleXpress/OpenFlux/issues/44">issue #44</a>). Модуль ставит nft-правило <code>krot_openflux</code> (или iptables <code>KROT_OPENFLUX</code>).</p>
-    <div class="row">
-      <label for="set-use_iptables">Брандмауэр</label>
-      <select id="set-use_iptables">
-        <option value="0">nftables</option>
-        <option value="1">iptables</option>
-      </select>
-    </div>
-    <div class="row">
-      <button id="btn-save-settings">Сохранить настройки</button>
-    </div>
+  <div class="steps" id="no-config" style="display:none">
+    <p><b>Настройка не завершена.</b></p>
+    <p>1. Собери бинарник: <code>sh hub/openflux/build-binaries.sh</code> (нужен Go)</p>
+    <p>2. Скопируй на роутер: <code>scp dist/openflux-linux-arm64 root@192.168.1.1:/tmp/openflux</code></p>
+    <p>3. Нажми «Обновить» в панели Hub или выполни: <code>sh /www/cgi-bin/openflux</code></p>
+    <p>4. Добавь инстанс в <code>/etc/config/krot_openflux</code> (см. комментарии в файле)</p>
   </div>
 
-  <h2>Инстансы (один инстанс = один транспорт+URL)</h2>
-  <table>
-    <thead>
-      <tr><th>Имя</th><th>Транспорт</th><th>Режим</th><th>Состояние</th><th></th></tr>
-    </thead>
-    <tbody id="inst-rows"></tbody>
-  </table>
-  <div class="row" style="margin-top:12px">
-    <button id="btn-add">Добавить инстанс</button>
-  </div>
+  <script src="/openflux/state.js"></script>
+  <script src="/openflux/qrcode.js"></script>
+  <script>
+    var cfg = window.OPENFLUX || {};
+    var statusEl = document.getElementById('status');
+    var qrEl = document.getElementById('qr');
+    var linkEl = document.getElementById('link');
+    var linkText = document.getElementById('link-text');
+    var copyBtn = document.getElementById('btn-copy');
+    var stepsEl = document.getElementById('steps');
+    var noConfigEl = document.getElementById('no-config');
 
-  <h2>Как это работает</h2>
-  <ol>
-    <li>Получите бинарник <code>openflux-linux-<span class="arch"></span></code>: соберите <code>hub/openflux/build-binaries.sh</code>, выложите по HTTPS и укажите <code>bin_base</code> выше (затем «Перезапустить»), либо скопируйте на роутер: <code>scp openflux-linux-<span class="arch"></span> root@&lt;router&gt;:/opt/openflux/openflux</code>.</li>
-    <li>Добавьте инстанс: выберите транспорт и вставьте его URL/токен (Yandex doc URL, MAX token+uid, base64 комнат Cups.online).</li>
-    <li>В l3-режиме роутер сам подавляет kernel-RST; в l4 работает без root, но медленнее.</li>
-    <li>На телефоне в OpenFluxAndroid подключитесь с теми же transport/url/codec.</li>
-  </ol>
-
-<script>
-(function () {
-  'use strict';
-  var TRANSPORTS = {
-    yandex: 'Yandex Docs (WS)',
-    vyandex: 'Yandex Volga',
-    oneme: 'MAX / OneMe',
-    cupsonline: 'Cups.online (rooms)',
-    mailru: 'Mail.ru Docs'
-  };
-
-  try {
-    var arch = (window.OPENFLUX_ARCH || '') + '';
-    Array.prototype.forEach.call(document.querySelectorAll('.arch'), function (el) {
-      el.textContent = arch || '<arch>';
-    });
-  } catch (e) {}
-
-  var loadCache = { instances: [], settings: {} };
-
-  function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
-
-  function api(method, payload) {
-    var body = 'action=' + encodeURIComponent(method);
-    if (payload !== undefined) {
-      body += '&payload=' + encodeURIComponent(JSON.stringify(payload));
-    }
-    return fetch('/cgi-bin/openflux', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body
-    }).then(function (r) { return r.json(); });
-  }
-
-  function toast(msg, kind) {
-    var t = document.createElement('div');
-    t.className = 'card toast';
-    t.style.borderColor = kind === 'error' ? '#b3403a' : '#3b82f6';
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function () { t.remove(); }, 4000);
-  }
-
-  function load() {
-    // Cache-bust so repeated loads see a fresh state.js.
-    return fetch('/openflux/state.js?ts=' + Date.now())
-      .then(function (r) { return r.text(); })
-      .then(function (txt) {
-        var sandbox = { window: {} };
-        new Function('window', txt + '; return window.OPENFLUX;')(sandbox);
-        loadCache = sandbox.window.OPENFLUX || { instances: [], settings: {} };
-        return loadCache;
-      })
-      .catch(function () { return { instances: [], settings: {} }; });
-  }
-
-  function serviceStatus() {
-    return api('status').then(function (r) { return (r && r.status) || 'stopped'; })
-      .catch(function () { return 'stopped'; });
-  }
-
-  function render(data, svc) {
-    if (data.arch) {
-      Array.prototype.forEach.call(document.querySelectorAll('.arch'), function (el) {
-        el.textContent = data.arch;
-      });
-    }
-    var badge = document.getElementById('svc-badge');
-    var running = /running/.test(svc || '');
-    var binPresent = data.bin_present === true;
-    badge.textContent = svc + (binPresent ? '' : ' (нет бинарника)');
-    badge.className = 'badge ' + (binPresent ? (running ? 'ok' : 'warn') : 'err');
-
-    var binBaseEl = document.getElementById('set-bin_base');
-    if (document.activeElement !== binBaseEl) {
-      binBaseEl.value = (data.settings && data.settings.bin_base) || '';
-    }
-    if (document.activeElement !== document.getElementById('set-suppress_rst')) {
-      document.getElementById('set-suppress_rst').value = String((data.settings && data.settings.suppress_rst) || '1');
-    }
-    if (document.activeElement !== document.getElementById('set-use_iptables')) {
-      document.getElementById('set-use_iptables').value = String((data.settings && data.settings.use_iptables) || '0');
+    // Build connection URI from first enabled instance
+    var uri = '';
+    var inst = (cfg.instances || []).filter(function(i) { return i.enabled; })[0];
+    if (inst && cfg.bin_present) {
+      var proto = 'openflux';
+      var transport = inst.transport || 'yandex';
+      var mode = inst.exit_mode || 'l3';
+      var params = [];
+      if (inst.url) params.push('url=' + encodeURIComponent(inst.url));
+      if (inst.max_token) params.push('maxToken=' + encodeURIComponent(inst.max_token));
+      if (inst.max_uid) params.push('maxUid=' + encodeURIComponent(inst.max_uid));
+      if (inst.codec) params.push('codec=' + encodeURIComponent(inst.codec));
+      if (inst.encryption_key) params.push('key=' + encodeURIComponent(inst.encryption_key));
+      if (inst.local_ip) params.push('localIp=' + encodeURIComponent(inst.local_ip));
+      uri = proto + '://' + transport + '/' + mode + '?' + params.join('&');
     }
 
-    var rows = document.getElementById('inst-rows');
-    rows.innerHTML = '';
-    var instances = data.instances || [];
-    instances.forEach(function (inst) {
-      var tr = document.createElement('tr');
-      var badgeCls = inst.enabled ? (running ? 'ok' : 'warn') : 'off';
-      var stateText = !inst.enabled ? 'выключен' : (running ? 'запущен' : 'стартует');
-      tr.innerHTML =
-        '<td><b>' + esc(inst.label || inst.id) + '</b></td>' +
-        '<td>' + esc(TRANSPORTS[inst.transport] || inst.transport) + '</td>' +
-        '<td>' + esc(String(inst.exit_mode || 'l3').toUpperCase()) + '</td>' +
-        '<td><span class="badge ' + badgeCls + '">' + esc(stateText) + '</span></td>' +
-        '<td style="white-space:nowrap">' +
-        '<button class="secondary" data-edit="' + esc(inst.id) + '">Изменить</button> ' +
-        '<button class="danger" data-del="' + esc(inst.id) + '">Удалить</button></td>';
-      rows.appendChild(tr);
-    });
-    if (!instances.length) {
-      var tr = document.createElement('tr');
-      tr.innerHTML = '<td colspan="5" class="hint">Пока нет ни одного инстанса</td>';
-      rows.appendChild(tr);
-    }
-  }
+    if (!cfg.bin_present) {
+      statusEl.textContent = 'Нет бинарника';
+      statusEl.className = 'status err';
+      noConfigEl.style.display = 'block';
+    } else if (!inst) {
+      statusEl.textContent = 'Нет активных инстансов';
+      statusEl.className = 'status warn';
+      noConfigEl.style.display = 'block';
+    } else {
+      statusEl.textContent = 'Готов к подключению';
+      statusEl.className = 'status ok';
+      var badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = (inst.transport || '?') + ' / ' + (inst.exit_mode || 'l3');
+      statusEl.appendChild(badge);
 
-  function refresh() {
-    return Promise.all([load(), serviceStatus()]).then(function (res) {
-      render(res[0], res[1]);
-    });
-  }
+      linkText.textContent = uri;
+      linkEl.style.display = 'block';
+      copyBtn.style.display = 'block';
+      stepsEl.style.display = 'block';
 
-  document.getElementById('btn-restart').onclick = function () {
-    api('restart').then(refresh)
-      .then(function () { toast('Сервис перезапущен'); })
-      .catch(function (e) { toast('Не удалось: ' + e, 'error'); });
-  };
-
-  document.getElementById('btn-save-settings').onclick = function () {
-    api('save_settings', {
-      bin_base: document.getElementById('set-bin_base').value.trim(),
-      suppress_rst: document.getElementById('set-suppress_rst').value,
-      use_iptables: document.getElementById('set-use_iptables').value
-    }).then(refresh)
-      .then(function () { toast('Настройки сохранены'); })
-      .catch(function (e) { toast('Не удалось: ' + e, 'error'); });
-  };
-
-  function openModal(inst) {
-    var isNew = !inst;
-    inst = inst || { transport: 'yandex', exit_mode: 'l3', codec: 'batched', listen_port: '4545', enabled: true };
-
-    var fields = [
-      ['label', 'Имя', 'text', inst.label || ''],
-      ['transport', 'Транспорт', 'select',
-        Object.keys(TRANSPORTS).map(function (k) { return [k, TRANSPORTS[k]]; }), inst.transport],
-      ['exit_mode', 'Режим выхода', 'select',
-        [['l3', 'l3: raw SNAT/DNAT (быстрее, root)'], ['l4', 'l4: gVisor (без root)']], inst.exit_mode],
-      ['url', 'URL / rooms base64', 'text', inst.url || ''],
-      ['max_token', 'MAX token', 'text', inst.max_token || ''],
-      ['max_uid', 'MAX user ID', 'text', inst.max_uid || ''],
-      ['codec', 'Кодек', 'select',
-        [['batched', 'batched + zstd'], ['legacy', 'legacy LZ4']], inst.codec],
-      ['listen_port', 'l4 fallback SOCKS порт', 'text', inst.listen_port || '4545'],
-      ['encryption_key', 'Ключ шифрования (AES-GCM)', 'text', inst.encryption_key || ''],
-      ['local_ip', 'Egress IP (l3)', 'text', inst.local_ip || '']
-    ];
-
-    var back = document.createElement('div');
-    back.className = 'modal-back';
-    var modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.innerHTML = '<h2 style="margin-top:0">' + (isNew ? 'Новый инстанс' : 'Изменить инстанс') + '</h2>';
-    fields.forEach(function (f) {
-      var row = document.createElement('div');
-      row.className = 'row';
-      var lab = document.createElement('label');
-      lab.htmlFor = 'f-' + f[0];
-      lab.textContent = f[1];
-      row.appendChild(lab);
-      if (f[2] === 'select') {
-        var sel = document.createElement('select');
-        sel.id = 'f-' + f[0];
-        f[3].forEach(function (opt) {
-          var o = document.createElement('option');
-          o.value = opt[0]; o.textContent = opt[1];
-          if (opt[0] === f[4]) o.selected = true;
-          sel.appendChild(o);
-        });
-        row.appendChild(sel);
-      } else {
-        var inp = document.createElement('input');
-        inp.type = 'text'; inp.id = 'f-' + f[0]; inp.value = f[3];
-        row.appendChild(inp);
+      if (typeof qrcode !== 'undefined') {
+        try {
+          var qr = qrcode(0, 'M');
+          qr.addData(uri);
+          qr.make();
+          qrEl.innerHTML = qr.createImgTag(6, 8);
+          qrEl.style.display = 'block';
+        } catch (e) {}
       }
-      modal.appendChild(row);
-    });
-    var actions = document.createElement('div');
-    actions.className = 'row';
-    var cancel = document.createElement('button');
-    cancel.className = 'secondary'; cancel.textContent = 'Отмена';
-    cancel.onclick = function () { back.remove(); };
-    var save = document.createElement('button');
-    save.textContent = 'Сохранить';
-    save.onclick = function () {
-      var payload = { id: isNew ? null : inst.id };
-      fields.forEach(function (f) {
-        payload[f[0]] = document.getElementById('f-' + f[0]).value;
-      });
-      api('save_instance', payload)
-        .then(function () { back.remove(); return refresh(); })
-        .then(function () { toast('Инстанс сохранён'); })
-        .catch(function (e) { toast('Не удалось: ' + e, 'error'); });
-    };
-    actions.appendChild(cancel);
-    actions.appendChild(save);
-    modal.appendChild(actions);
-    back.appendChild(modal);
-    document.body.appendChild(back);
-  }
-
-  document.getElementById('btn-add').onclick = function () { openModal(null); };
-
-  document.getElementById('inst-rows').addEventListener('click', function (ev) {
-    var t = ev.target;
-    if (t.dataset && t.dataset.edit) {
-      var inst = (loadCache.instances || []).filter(function (i) { return i.id === t.dataset.edit; })[0];
-      if (inst) { openModal(inst); }
-    } else if (t.dataset && t.dataset.del) {
-      if (!window.confirm('Удалить инстанс ' + t.dataset.del + '?')) { return; }
-      api('del_instance', { id: t.dataset.del })
-        .then(refresh)
-        .then(function () { toast('Инстанс удалён'); })
-        .catch(function (e) { toast('Не удалось: ' + e, 'error'); });
     }
-  });
 
-  refresh();
-
-  // Auto-refresh every 5s while no modal is open and no field is focused
-  // (so the table stays live but user edits are never clobbered).
-  var autoTimer = setInterval(function () {
-    if (document.querySelector('.modal-back')) return;
-    var ae = document.activeElement;
-    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) return;
-    refresh();
-  }, 5000);
-})();
-</script>
+    function copyLink() {
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(uri).then(function(){ alert('Ссылка скопирована'); });
+      } else {
+        var t = document.createElement('textarea');
+        t.value = uri; document.body.appendChild(t);
+        t.select(); document.execCommand('copy');
+        document.body.removeChild(t); alert('Ссылка скопирована');
+      }
+    }
+  </script>
 </body>
 </html>

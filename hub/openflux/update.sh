@@ -1,7 +1,7 @@
 #!/bin/sh
 # OpenFlux Exit Node updater for K.R.O.T. Hub.
 # Re-runs install.sh from the module repo: it preserves /etc/config/krot_openflux
-# and picks up the binary via bin_base / /tmp/openflux when present.
+# and picks up the binary via bin_base (from UCI config) / /tmp/openflux when present.
 set -e
 
 OF_REPO="${OF_REPO:-titovcode/krot}"
@@ -18,5 +18,12 @@ else
 fi
 
 [ -s "$TMP" ] || { echo "Failed to download install.sh from $URL" >&2; exit 1; }
+
+# Pass bin_base from UCI config into the environment so install.sh can use it
+# (install.sh also reads UCI directly, but this makes it explicit and testable).
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/krot_openflux ]; then
+    OF_BIN_BASE="$(uci -q get krot_openflux.settings.bin_base 2>/dev/null || true)"
+    export OF_BIN_BASE
+fi
 
 sh "$TMP"
