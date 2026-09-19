@@ -18,12 +18,10 @@ SECTION="${1:-}"
 [ -n "$SECTION" ] || { echo "usage: $0 <section>" >&2; exit 1; }
 [ -f "/etc/config/${CONFIG_NAME}" ] || exit 0
 
-LIB_DIR="/usr/lib/krot-openflux"
-BIN="${LIB_DIR}/bin/openflux"
-STATE_DIR="/etc/krot-openflux"
-RUN_DIR="/var/run/krot-openflux"
+OF_DIR="/opt/openflux"
+BIN="${OF_DIR}/openflux"
+STATE_DIR="/etc/openflux"
 NFT_TABLE="krot_openflux"
-NFT_CHAIN="krot_openflux_rst"
 IPT_CHAIN="KROT_OPENFLUX"
 
 export IPKG_INSTROOT="${IPKG_INSTROOT:-}"
@@ -50,7 +48,7 @@ config_get use_iptables "settings" "use_iptables" "0"
 log() { logger -t "krot-openflux[$SECTION]" -- "$*"; echo "krot-openflux[$SECTION]: $*"; }
 
 if [ ! -x "$BIN" ]; then
-    log "binary $BIN is missing; install it via Hub (bin_base) or copy it manually"
+    log "binary $BIN is missing; set bin_base on http://<router-ip>/openflux/ and press Update, or copy the binary manually"
     exit 1
 fi
 
@@ -81,7 +79,7 @@ case "$transport" in
         ;;
 esac
 
-mkdir -p "$STATE_DIR" "$RUN_DIR"
+mkdir -p "$STATE_DIR"
 
 # ---------------------------------------------------------------------------
 # Kernel RST suppression for l3 mode (scoped to the tunnel egress when
@@ -136,7 +134,7 @@ fi
 # Compose the command line
 # ---------------------------------------------------------------------------
 
-cd "$LIB_DIR" || exit 1
+cd "$OF_DIR" || exit 1
 
 set -- --role=exit --mode="$exit_mode" --transport="$transport"
 case "$transport" in
