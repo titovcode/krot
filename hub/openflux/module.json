@@ -1,0 +1,15 @@
+{
+  "id": "openflux",
+  "name": "OpenFlux Exit Node",
+  "description": "Runs an OpenFlux exit node on the router. Phones running OpenFluxAndroid tunnel their traffic through whitelisted transports (Yandex Docs/Volga, MAX, Cups.online, Mail.ru) to the router's WAN. Adds a LuCI page: Services -> OpenFlux.",
+  "category": "tunnel",
+  "author": "titovcode",
+  "project_url": "https://github.com/p1neappleXpress/OpenFlux",
+  "component": "openflux",
+  "repo": "titovcode/krot",
+  "version": "0.1.0",
+  "web_url": "http://{{router_ip}}/cgi-bin/luci/admin/services/krot-openflux",
+  "install_script": "hub/openflux/install.sh",
+  "update_script": "hub/openflux/update.sh",
+  "remove_script": "hub/openflux/remove.sh"
+}

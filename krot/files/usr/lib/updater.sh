@@ -1837,6 +1837,10 @@ hub_module_installed_status() {
             is_olcrtc_installed || return 1
             hub_installed_version="$(get_olcrtc_version 2>/dev/null || true)"
             ;;
+        openflux)
+            is_openflux_installed || return 1
+            hub_installed_version="$(get_openflux_version 2>/dev/null || true)"
+            ;;
         *)
             return 1
             ;;
@@ -1859,6 +1863,17 @@ is_olcrtc_installed() {
 # olcRTC srv has no --version flag; report the module's known version.
 get_olcrtc_version() {
     echo "0.1.0"
+}
+
+# Whether the OpenFlux exit-node module is present: init script plus the
+# openflux binary installed by hub/openflux/install.sh.
+is_openflux_installed() {
+    [ -x /etc/init.d/krot-openflux ] && [ -x /usr/lib/krot-openflux/openflux ]
+}
+
+# The runner writes the module version to /usr/lib/krot-openflux/VERSION.
+get_openflux_version() {
+    head -n 1 /usr/lib/krot-openflux/VERSION 2>/dev/null || echo "installed"
 }
 
 hub_get_modules() {

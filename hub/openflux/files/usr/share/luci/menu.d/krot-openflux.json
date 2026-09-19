@@ -1,0 +1,14 @@
+{
+  "admin/services/krot-openflux": {
+    "title": "OpenFlux Exit Node",
+    "order": 44,
+    "action": {
+      "type": "view",
+      "path": "krot-openflux/openflux"
+    },
+    "depends": {
+      "acl": [ "luci-app-krot-openflux" ],
+      "uci": { "krot_openflux": true }
+    }
+  }
+}

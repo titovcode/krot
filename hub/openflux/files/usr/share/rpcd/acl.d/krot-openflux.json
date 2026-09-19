@@ -1,0 +1,24 @@
+{
+  "luci-app-krot-openflux": {
+    "description": "Grant UCI and RPC access to the K.R.O.T. OpenFlux Exit Node module",
+    "read": {
+      "file": {
+        "/etc/init.d/krot-openflux": [ "exec", "read" ],
+        "/usr/lib/krot-openflux/openflux-run.sh": [ "exec", "read" ],
+        "/etc/krot-openflux/*": [ "read" ],
+        "/var/run/krot-openflux/*": [ "read" ]
+      },
+      "ubus": {
+        "service": [ "list" ]
+      },
+      "uci": [ "krot_openflux" ]
+    },
+    "write": {
+      "file": {
+        "/etc/init.d/krot-openflux": [ "exec" ],
+        "/etc/krot-openflux/*": [ "write" ]
+      },
+      "uci": [ "krot_openflux" ]
+    }
+  }
+}
