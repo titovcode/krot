@@ -373,6 +373,13 @@ case "$ACTION" in
             fi
             echo "=== fetch log ==="
             tail -n 10 /tmp/openflux-fetch.log 2>/dev/null || echo "(none)"
+            # The runner redirects the binary's own output here; this is where
+            # the real crash reason shows up in a respawn loop.
+            for f in /tmp/openflux-*.log; do
+                [ -f "$f" ] || continue
+                echo "=== $f ==="
+                tail -n 30 "$f" 2>/dev/null
+            done
         } > /tmp/of-logs.txt 2>&1
         # JSON-escape the whole dump: backslash, quote, then join lines with \n.
         ESC="$(awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); if (NR>1) printf "\\n"; print}' /tmp/of-logs.txt 2>/dev/null)"

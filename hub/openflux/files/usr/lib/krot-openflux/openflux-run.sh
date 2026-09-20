@@ -88,9 +88,10 @@ mkdir -p "$STATE_DIR"
 
 rst_rule_present() {
     if command -v nft >/dev/null 2>&1 && [ "$use_iptables" != "1" ]; then
-        nft list table ip "$NFT_TABLE" >/dev/null 2>&1
+        # Table alone is not enough: the drop rule itself must be there.
+        nft list chain ip "$NFT_TABLE" output 2>/dev/null | grep -q 'tcp flags.*drop'
     elif command -v iptables >/dev/null 2>&1; then
-        iptables -t filter -nL "$IPT_CHAIN" >/dev/null 2>&1
+        iptables -t filter -nL "$IPT_CHAIN" 2>/dev/null | grep -q DROP
     else
         return 1
     fi
@@ -98,14 +99,24 @@ rst_rule_present() {
 
 rst_rule_install() {
     if command -v nft >/dev/null 2>&1 && [ "$use_iptables" != "1" ]; then
+        # Several instances share one table; a concurrent start may have
+        # installed the rule already. Check before adding a duplicate.
+        rst_rule_present && return 0
         nft add table ip "$NFT_TABLE" 2>/dev/null || true
         nft add chain ip "$NFT_TABLE" output '{ type filter hook output priority -1 ; }' 2>/dev/null || true
+        # nft rejects `tcp flags & (tcp-rst) != 0` ("Could not parse TCP flag
+        # expression"); use symbolic flag names. Pass the rule as ONE quoted
+        # argument so it is parsed exactly as if typed on the command line.
         if [ -n "$local_ip" ]; then
-            nft add rule ip "$NFT_TABLE" output 'ip saddr' "$local_ip" 'tcp flags \& (tcp-rst) \!\= 0 counter drop' 2>/dev/null || true
+            nft "add rule ip $NFT_TABLE output ip saddr $local_ip tcp flags & rst == rst counter drop" 2>/dev/null || true
         else
-            nft add rule ip "$NFT_TABLE" output 'tcp flags \& (tcp-rst) \!\= 0 counter drop' 2>/dev/null || true
+            nft "add rule ip $NFT_TABLE output tcp flags & rst == rst counter drop" 2>/dev/null || true
         fi
-        rst_rule_present && log "kernel RST suppression active (nft: $NFT_TABLE)"
+        if rst_rule_present; then
+            log "kernel RST suppression active (nft: $NFT_TABLE)"
+        else
+            log "WARNING: failed to install the nft RST drop rule; l3 tunnels may be broken by kernel RSTs"
+        fi
     elif command -v iptables >/dev/null 2>&1; then
         iptables -t filter -N "$IPT_CHAIN" 2>/dev/null || true
         iptables -t filter -F "$IPT_CHAIN" 2>/dev/null || true
@@ -123,10 +134,19 @@ rst_rule_install() {
 }
 
 if [ "$exit_mode" = "l3" ] && [ "$suppress_rst" = "1" ]; then
+    # Instances start in parallel and share one nft table/iptables chain;
+    # serialize the install so two runners do not add the same rule twice.
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>/tmp/krot-openflux-rst.lock
+        flock 9
+    fi
     if rst_rule_present; then
         log "kernel RST suppression already active"
     else
         rst_rule_install
+    fi
+    if command -v flock >/dev/null 2>&1; then
+        flock -u 9 2>/dev/null || true
     fi
 fi
 
@@ -171,4 +191,12 @@ if [ "$exit_mode" = "l4" ]; then
 fi
 
 log "starting openflux ($transport, $exit_mode)"
-exec "$BIN" "$@"
+
+# Capture the binary's own stdout/stderr — procd would otherwise send it to
+# /dev/null, hiding the crash reason in a respawn loop. Append so a respawn
+# does not wipe the previous failure.
+LOG_FILE="/tmp/openflux-${SECTION}.log"
+{
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') starting: $* ==="
+    exec "$BIN" "$@"
+} >>"$LOG_FILE" 2>&1
