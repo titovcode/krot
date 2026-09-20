@@ -176,7 +176,13 @@ set -- "$@" --codec "$codec"
 [ "$debug" = "1" ] && set -- "$@" --debug
 
 # Optional AES-256-GCM: write the shared secret to a root-only file.
+# The binary hard-fails on secrets shorter than 16 chars — reject early with
+# a clear log line instead of a respawn loop.
 if [ -n "$encryption_key" ]; then
+    if [ "${#encryption_key}" -lt 16 ]; then
+        log "ERROR: encryption_key is ${#encryption_key} chars; the binary requires at least 16. Not starting."
+        exit 1
+    fi
     KEY_FILE="${STATE_DIR}/${SECTION}.key"
     umask 077
     printf '%s' "$encryption_key" > "$KEY_FILE"

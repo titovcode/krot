@@ -413,6 +413,12 @@
   document.getElementById('btn-save-instance').onclick = function () {
     var transport = document.getElementById('f-transport').value;
     var urlField = transport === 'cupsonline' ? 'f-cups-rooms' : 'f-url';
+    var encKey = document.getElementById('f-encryption_key').value;
+    // The binary hard-fails on secrets shorter than 16 chars; catch it here.
+    if (encKey && encKey.length < 16) {
+      toast('Ключ шифрования должен быть не короче 16 символов (или оставьте пустым)', true);
+      return;
+    }
     var payload = {
       id: document.getElementById('f-id').value || null,
       label: document.getElementById('f-label').value,
