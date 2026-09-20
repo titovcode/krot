@@ -16,7 +16,7 @@
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.3"
+MODULE_VERSION="0.2.4"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
@@ -161,6 +161,12 @@ install_binary() {
     else
         base="https://github.com/${OF_RELEASE_REPO}/releases/download/${OF_TAG}"
     fi
+
+    # Users often paste the release *page* URL from the browser; rewrite it to
+    # the download base so the asset URL resolves instead of 404-ing.
+    case "$base" in
+        */releases/tag/*) base="$(printf '%s' "$base" | sed 's,/releases/tag/,/releases/download/,')" ;;
+    esac
 
     local url="${base}/openflux-linux-${BIN_LABEL}"
     msg "Architecture: $ARCH (label: $BIN_LABEL)"
@@ -341,6 +347,31 @@ case "$ACTION" in
     restart)
         "$INIT" restart >/dev/null 2>&1 || true
         emit '{"ok":true}'
+        ;;
+    fetch_binary)
+        # Download the openflux binary for this architecture using bin_base
+        # from UCI (falls back to the pinned module release). Runs in the
+        # background: uhttpd CGIs are short-lived, a 12 MB download is not.
+        (
+            OF_BIN_BASE="$(uci -q get "$CONFIG.settings.bin_base" 2>/dev/null || true)"
+            export OF_BIN_BASE
+            /opt/openflux/fetch-binary.sh >/tmp/openflux-fetch.log 2>&1 || true
+            regen_state
+            "$INIT" restart >/dev/null 2>&1 || true
+        ) >/dev/null 2>&1 &
+        emit '{"ok":true,"started":true}'
+        ;;
+    fetch_status)
+        # Report progress of a running/finished fetch for the panel poller.
+        LOG="/tmp/openflux-fetch.log"
+        if [ -x /opt/openflux/openflux ]; then
+            emit '{"state":"done","bin":true}'
+        elif [ -f "$LOG" ]; then
+            tail -n 3 "$LOG" 2>/dev/null | tr '\n' ' ' | sed 's/"/\\"/g' > /tmp/of-msg 2>/dev/null
+            printf 'Content-Type: application/json\r\n\r\n{"state":"running","msg":"%s"}\n' "$(cat /tmp/of-msg 2>/dev/null)"
+        else
+            emit '{"state":"idle"}'
+        fi
         ;;
     save_settings)
         [ -f "/etc/config/$CONFIG" ] || { emit '{"ok":false,"error":"no config"}'; exit 0; }
@@ -533,7 +564,7 @@ instance_json() {
 OUT="/www/openflux/state.js.tmp"
 {
     printf 'window.OPENFLUX = { arch: "'
-    printf '%s' "$(uname -m | json_escape)"
+    printf '%s' "$(json_escape "$(uname -m)")"
     printf '", bin_present: %s, instances: [' "$([ -x /opt/openflux/openflux ] && echo true || echo false)"
     first=1
     config_foreach instance_json instance
@@ -553,6 +584,111 @@ GENSH
 }
 
 # ---------------------------------------------------------------------------
+# 6b. fetch-binary.sh — standalone downloader used by the panel button.
+#     Same resolution order as install_binary(): UCI bin_base (with the
+#     common /releases/tag/ -> /releases/download/ typo fix) -> pinned release.
+# ---------------------------------------------------------------------------
+
+install_fetch_binary() {
+    cat > "$OF_DIR/fetch-binary.sh" <<'FETCHSH'
+#!/bin/sh
+# fetch-binary.sh — download the openflux binary for this router's arch.
+# Triggered by the "Скачать бинарник" button on the web panel.
+set -e
+
+OF_DIR="/opt/openflux"
+OF_BIN="$OF_DIR/openflux"
+OF_TAG="openflux-0.1.0"
+OF_RELEASE_REPO="${OF_RELEASE_REPO:-titovcode/krot}"
+UPSTREAM_RELEASE_REPO="p1neappleXpress/OpenFlux"
+GITHUB_API="https://api.github.com"
+LOG="/tmp/openflux-fetch.log"
+
+log() { echo "$*"; }
+
+is_elf() { [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
+
+http_get() {
+    if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time 30 "$1";
+    elif command -v wget >/dev/null 2>&1; then wget -qO- --timeout=30 "$1";
+    else echo "curl or wget required"; exit 1; fi
+}
+
+http_download() {
+    if command -v curl >/dev/null 2>&1; then curl -fSL --connect-timeout 15 --max-time 900 "$1" -o "$2";
+    elif command -v wget >/dev/null 2>&1; then wget -qO "$2" --timeout=900 "$1";
+    else echo "curl or wget required"; exit 1; fi
+}
+
+[ -x "$OF_BIN" ] && { log "binary already present at $OF_BIN"; exit 0; }
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64)        BIN_LABEL="amd64" ;;
+    aarch64|arm64) BIN_LABEL="arm64" ;;
+    armv7l|armv7)  BIN_LABEL="armv7" ;;
+    armv6l|armv6)  BIN_LABEL="armv6" ;;
+    mipsel)        BIN_LABEL="mipsle" ;;
+    mips)          BIN_LABEL="mips" ;;
+    mips64el)      BIN_LABEL="mips64le" ;;
+    *) log "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+BASE="${OF_BIN_BASE:-}"
+[ -n "$BASE" ] || BASE="$(uci -q get krot_openflux.settings.bin_base 2>/dev/null || true)"
+BASE="${BASE%/}"
+
+# Users often paste the release *page* URL from the browser; rewrite it to the
+# download base so the asset URL resolves instead of 404-ing.
+case "$BASE" in
+    */releases/tag/*) BASE="$(printf '%s' "$BASE" | sed 's,/releases/tag/,/releases/download/,')" ;;
+esac
+
+[ -n "$BASE" ] || BASE="https://github.com/${OF_RELEASE_REPO}/releases/download/${OF_TAG}"
+
+URL="${BASE}/openflux-linux-${BIN_LABEL}"
+log "arch=$ARCH label=$BIN_LABEL"
+log "downloading $URL"
+
+TMP="$(mktemp -d /tmp/openflux-fetch.XXXXXX 2>/dev/null || echo /tmp/openflux-fetch.$$)"
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+if http_download "$URL" "$TMP/openflux" 2>/dev/null && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
+    mkdir -p "$OF_DIR"
+    mv "$TMP/openflux" "$OF_BIN"
+    chmod 0755 "$OF_BIN"
+    log "installed openflux ($BIN_LABEL) from $BASE"
+    exit 0
+fi
+log "download from $URL failed"
+
+# Fallback: scan upstream releases for a matching asset.
+log "scanning ${UPSTREAM_RELEASE_REPO} releases..."
+release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20" 2>/dev/null)" || release_json=""
+if [ -n "$release_json" ]; then
+    asset_url="$(printf '%s\n' "$release_json" \
+        | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
+        | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+    if [ -n "$asset_url" ]; then
+        log "downloading $(basename "$asset_url")"
+        if http_download "$asset_url" "$TMP/openflux" && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
+            mkdir -p "$OF_DIR"
+            mv "$TMP/openflux" "$OF_BIN"
+            chmod 0755 "$OF_BIN"
+            log "installed openflux ($BIN_LABEL) from upstream release"
+            exit 0
+        fi
+    fi
+fi
+
+log "ERROR: could not download openflux-linux-${BIN_LABEL}."
+log "Set bin_base to a URL serving openflux-linux-${BIN_LABEL} and try again."
+exit 1
+FETCHSH
+    chmod 0755 "$OF_DIR/fetch-binary.sh"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
@@ -562,6 +698,7 @@ install_webpanel
 install_cgi
 install_runner
 install_state_gen
+install_fetch_binary
 install_init
 install_binary
 

@@ -7,7 +7,7 @@
   "project_url": "https://github.com/p1neappleXpress/OpenFlux",
   "component": "openflux",
   "repo": "titovcode/krot",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "web_url": "http://{{router_ip}}/openflux/",
   "install_script": "hub/openflux/install.sh",
   "update_script": "hub/openflux/update.sh",
