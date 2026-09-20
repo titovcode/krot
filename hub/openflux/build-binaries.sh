@@ -31,7 +31,7 @@ clone_or_update_src() {
 build_one() {
     # build_one <goarch> <goarm|-> <label>
     local goarch="$1" goarm="$2" label="$3"
-    echo "==> building openflux-linux-${label} (GOOS=linux GOARCH=${goarm#-}${goarch})"
+    echo "==> building openflux-linux-${label} (GOOS=linux GOARCH=${goarch} GOARM=${goarm})"
     ( cd "$SRC_DIR" \
         && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" GOARM="${goarm#-}" \
         go build -ldflags="-s -w" -trimpath -o "$OUT_DIR/openflux-linux-${label}" . )

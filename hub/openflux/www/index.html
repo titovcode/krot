@@ -11,131 +11,364 @@
     margin: 0; padding: 24px 20px 40px;
     background: #0f1115; color: #e6e8eb;
     font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    display: flex; flex-direction: column; align-items: center;
+    max-width: 640px; margin: 0 auto;
   }
   h1 { font-size: 22px; margin: 4px 0 8px; }
-  .sub { color: #9aa3ae; font-size: 14px; text-align: center; max-width: 480px; margin: 0 0 20px; }
-  #qr { background: #fff; padding: 14px; border-radius: 12px; margin: 0 0 20px; }
-  .link {
-    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
-    padding: 10px 12px; font-size: 12px; word-break: break-all;
-    max-width: 480px; text-align: center; margin-bottom: 12px;
+  h2 { font-size: 16px; margin: 24px 0 12px; color: #c9d0d8; }
+  .sub { color: #9aa3ae; font-size: 14px; margin: 0 0 20px; }
+  .card {
+    background: #161a22; border: 1px solid #2c3340; border-radius: 12px;
+    padding: 16px; margin: 0 0 16px;
   }
+  .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  label { color: #9aa3ae; min-width: 120px; font-size: 13px; }
+  input[type=text], select {
+    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
+    color: #e6e8eb; padding: 8px 10px; font-size: 13px; flex: 1;
+    font-family: inherit;
+  }
+  select { max-width: 200px; }
   button {
     background: #3b82f6; color: #fff; border: 0; border-radius: 8px;
-    padding: 10px 18px; font-size: 14px; cursor: pointer; margin-bottom: 28px;
+    padding: 9px 16px; font-size: 13px; cursor: pointer;
   }
-  .steps { max-width: 480px; font-size: 14px; line-height: 1.6; color: #c9d0d8; }
-  .steps b { color: #fff; }
-  code { color: #8fd3ff; }
+  button.secondary { background: #2c3340; }
+  button.danger { background: #b3403a; padding: 6px 12px; font-size: 12px; }
   .status {
     display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 13px;
-    margin-bottom: 16px; background: rgba(128,128,128,0.2);
   }
   .status.ok { background: rgba(55,169,105,0.25); color: #37a169; }
   .status.warn { background: rgba(221,160,44,0.25); color: #dda02c; }
   .status.err { background: rgba(200,60,60,0.25); color: #d06060; }
-  .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
-    background: #2c3340; margin-left: 8px;
+  .hint { color: #8a929c; font-size: 12px; line-height: 1.5; }
+  code { color: #8fd3ff; }
+  .instance {
+    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
+    padding: 12px; margin: 8px 0;
   }
+  .instance-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .instance-name { font-weight: 600; }
+  .instance-meta { color: #9aa3ae; font-size: 12px; }
+  .form-grid { display: grid; gap: 10px; }
+  .form-row { display: flex; gap: 10px; align-items: center; }
+  .form-row label { min-width: 100px; }
+  .hidden { display: none; }
+  .transport-fields { margin-top: 10px; padding-top: 10px; border-top: 1px solid #2c3340; }
+  .toast {
+    position: fixed; right: 16px; bottom: 16px; z-index: 99;
+    background: #161a22; border: 1px solid #3b82f6; border-radius: 8px;
+    padding: 12px 16px; font-size: 13px;
+  }
+  .toast.error { border-color: #b3403a; }
 </style>
 </head>
 <body>
   <h1>OpenFlux Exit Node</h1>
-  <p class="sub">Выходная нода OpenFlux на роутере. Телефон с приложением <b>OpenFluxAndroid</b> туннелирует трафик через разрешённые транспорты и выходит через WAN этого роутера.</p>
+  <p class="sub">Выходная нода OpenFlux. Телефон с <b>OpenFluxAndroid</b> туннелирует трафик через выбранный транспорт на этот роутер.</p>
 
-  <div id="status" class="status">Загрузка...</div>
-
-  <div id="qr" style="display:none"></div>
-  <div class="link" id="link" style="display:none"><code id="link-text"></code></div>
-  <button id="btn-copy" style="display:none" onclick="copyLink()">Копировать ссылку</button>
-
-  <div class="steps" id="steps" style="display:none">
-    <p><b>1.</b> Установи <code>OpenFluxAndroid</code> на телефон.</p>
-    <p><b>2.</b> В приложении: Добавить — по QR/скан — отсканируй код выше (достаточно один раз, дома).</p>
-    <p><b>3.</b> Нажми «Подключить». Работает в любой сети, где доступен выбранный транспорт.</p>
+  <div class="card">
+    <div class="row">
+      <span id="svc-status" class="status">Загрузка...</span>
+      <button id="btn-restart" class="secondary">Перезапустить</button>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label>bin_base</label>
+      <input type="text" id="set-bin_base" placeholder="https://github.com/.../releases/download/...">
+    </div>
+    <p class="hint">URL с бинарниками <code>openflux-linux-*</code>. Пусто = попытка скачать из релиза <code>openflux-0.1.0</code> репозитория модуля.</p>
+    <div class="row">
+      <label>Подавление RST</label>
+      <select id="set-suppress_rst">
+        <option value="1">включено (рекомендуется для l3)</option>
+        <option value="0">отключено</option>
+      </select>
+    </div>
+    <p class="hint">В l3-режиме ядро шлёт TCP RST на чужие соединения и рвёт туннель. Модуль ставит nft-таблицу <code>krot_openflux</code> (или iptables-цепочку <code>KROT_OPENFLUX</code>).</p>
+    <div class="row">
+      <label>Брандмауэр</label>
+      <select id="set-use_iptables">
+        <option value="0">nftables</option>
+        <option value="1">iptables</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="btn-save-settings">Сохранить настройки</button>
+    </div>
   </div>
 
-  <div class="steps" id="no-config" style="display:none">
-    <p><b>Настройка не завершена.</b></p>
-    <p>1. Собери бинарник: <code>sh hub/openflux/build-binaries.sh</code> (нужен Go)</p>
-    <p>2. Скопируй на роутер: <code>scp dist/openflux-linux-arm64 root@192.168.1.1:/tmp/openflux</code></p>
-    <p>3. Нажми «Обновить» в панели Hub или выполни: <code>sh /www/cgi-bin/openflux</code></p>
-    <p>4. Добавь инстанс в <code>/etc/config/krot_openflux</code> (см. комментарии в файле)</p>
+  <h2>Инстансы</h2>
+  <div id="instances"></div>
+
+  <div class="card hidden" id="form-card">
+    <h3 id="form-title" style="margin:0 0 12px 0; font-size:14px">Новый инстанс</h3>
+    <input type="hidden" id="f-id">
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Имя</label>
+        <input type="text" id="f-label" placeholder="Мой телефон">
+      </div>
+      <div class="form-row">
+        <label>Транспорт</label>
+        <select id="f-transport">
+          <option value="yandex">Yandex Docs</option>
+          <option value="vyandex">Yandex Volga</option>
+          <option value="oneme">MAX / OneMe</option>
+          <option value="cupsonline">Cups.online</option>
+          <option value="mailru">Mail.ru Docs</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Режим</label>
+        <select id="f-exit_mode">
+          <option value="l3">l3 (быстрее, нужен root)</option>
+          <option value="l4">l4 (gVisor, без root)</option>
+        </select>
+      </div>
+
+      <div class="transport-fields" id="fields-yandex">
+        <div class="form-row">
+          <label>URL документа</label>
+          <input type="text" id="f-url" placeholder="https://docs.yandex.ru/...">
+        </div>
+      </div>
+
+      <div class="transport-fields hidden" id="fields-oneme">
+        <div class="form-row">
+          <label>MAX token</label>
+          <input type="text" id="f-max_token" placeholder="token">
+        </div>
+        <div class="form-row">
+          <label>MAX user ID</label>
+          <input type="text" id="f-max_uid" placeholder="123456">
+        </div>
+      </div>
+
+      <div class="transport-fields hidden" id="fields-cupsonline">
+        <div class="form-row">
+          <label>Rooms base64</label>
+          <input type="text" id="f-cups-rooms" placeholder="base64...">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label>Кодек</label>
+        <select id="f-codec">
+          <option value="batched">batched + zstd</option>
+          <option value="legacy">legacy LZ4</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Ключ шифрования</label>
+        <input type="text" id="f-encryption_key" placeholder="опционально, AES-256-GCM">
+      </div>
+      <div class="form-row">
+        <label>Egress IP</label>
+        <input type="text" id="f-local_ip" placeholder="пусто = авто (только l3)">
+      </div>
+      <div class="form-row">
+        <label>SOCKS-порт</label>
+        <input type="text" id="f-listen_port" placeholder="4545 (только l4)">
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="btn-save-instance">Сохранить</button>
+      <button id="btn-cancel" class="secondary">Отмена</button>
+    </div>
   </div>
 
-  <script src="/openflux/state.js"></script>
-  <script src="/openflux/qrcode.js"></script>
-  <script>
-    var cfg = window.OPENFLUX || {};
-    var statusEl = document.getElementById('status');
-    var qrEl = document.getElementById('qr');
-    var linkEl = document.getElementById('link');
-    var linkText = document.getElementById('link-text');
-    var copyBtn = document.getElementById('btn-copy');
-    var stepsEl = document.getElementById('steps');
-    var noConfigEl = document.getElementById('no-config');
+  <button id="btn-add">+ Добавить инстанс</button>
 
-    // Build connection URI from first enabled instance
-    var uri = '';
-    var inst = (cfg.instances || []).filter(function(i) { return i.enabled; })[0];
-    if (inst && cfg.bin_present) {
-      var proto = 'openflux';
-      var transport = inst.transport || 'yandex';
-      var mode = inst.exit_mode || 'l3';
-      var params = [];
-      if (inst.url) params.push('url=' + encodeURIComponent(inst.url));
-      if (inst.max_token) params.push('maxToken=' + encodeURIComponent(inst.max_token));
-      if (inst.max_uid) params.push('maxUid=' + encodeURIComponent(inst.max_uid));
-      if (inst.codec) params.push('codec=' + encodeURIComponent(inst.codec));
-      if (inst.encryption_key) params.push('key=' + encodeURIComponent(inst.encryption_key));
-      if (inst.local_ip) params.push('localIp=' + encodeURIComponent(inst.local_ip));
-      uri = proto + '://' + transport + '/' + mode + '?' + params.join('&');
+  <h2>Как подключить телефон</h2>
+  <div class="card hint">
+    <p>1. Установи <code>OpenFluxAndroid</code> на телефон</p>
+    <p>2. В приложении выбери тот же транспорт и введи те же параметры (URL/токен/комнату)</p>
+    <p>3. Нажми «Подключить»</p>
+    <p style="margin-top:12px">Бинарник должен лежать в <code>/opt/openflux/openflux</code>. Собери: <code>sh hub/openflux/build-binaries.sh</code>, скопируй: <code>scp dist/openflux-linux-arm64 root@192.168.1.1:/tmp/openflux</code>, затем нажми «Обновить» в Hub.</p>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  var state = { instances: [], settings: {}, bin_present: false, arch: '' };
+
+  function api(action, payload) {
+    var body = 'action=' + encodeURIComponent(action);
+    if (payload !== undefined) {
+      body += '&payload=' + encodeURIComponent(JSON.stringify(payload));
     }
+    return fetch('/cgi-bin/openflux', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body
+    }).then(function (r) { return r.json(); });
+  }
 
-    if (!cfg.bin_present) {
+  function toast(msg, isError) {
+    var t = document.createElement('div');
+    t.className = 'toast' + (isError ? ' error' : '');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 4000);
+  }
+
+  function load() {
+    return fetch('/openflux/state.js?ts=' + Date.now())
+      .then(function (r) { return r.text(); })
+      .then(function (txt) {
+        // state.js does `window.OPENFLUX = {...}`; capture it through the
+        // function's return value, since the `window` parameter shadows the
+        // real global inside the wrapper (sandbox.window is never written).
+        state = new Function('window', '"use strict"; ' + txt + '; return window.OPENFLUX;')({}) || { instances: [], settings: {} };
+        return api('status').then(function (svc) {
+          state.service = (svc && svc.status) || 'stopped';
+          state.bin_present = (svc && svc.bin) || false;
+          render();
+        });
+      })
+      .catch(function () { render(); });
+  }
+
+  function render() {
+    var statusEl = document.getElementById('svc-status');
+    var running = state.service === 'running';
+
+    if (!state.bin_present) {
       statusEl.textContent = 'Нет бинарника';
       statusEl.className = 'status err';
-      noConfigEl.style.display = 'block';
-    } else if (!inst) {
-      statusEl.textContent = 'Нет активных инстансов';
-      statusEl.className = 'status warn';
-      noConfigEl.style.display = 'block';
-    } else {
-      statusEl.textContent = 'Готов к подключению';
+    } else if (running) {
+      statusEl.textContent = 'Работает';
       statusEl.className = 'status ok';
-      var badge = document.createElement('span');
-      badge.className = 'badge';
-      badge.textContent = (inst.transport || '?') + ' / ' + (inst.exit_mode || 'l3');
-      statusEl.appendChild(badge);
-
-      linkText.textContent = uri;
-      linkEl.style.display = 'block';
-      copyBtn.style.display = 'block';
-      stepsEl.style.display = 'block';
-
-      if (typeof qrcode !== 'undefined') {
-        try {
-          var qr = qrcode(0, 'M');
-          qr.addData(uri);
-          qr.make();
-          qrEl.innerHTML = qr.createImgTag(6, 8);
-          qrEl.style.display = 'block';
-        } catch (e) {}
-      }
+    } else {
+      statusEl.textContent = 'Остановлен';
+      statusEl.className = 'status warn';
     }
 
-    function copyLink() {
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(uri).then(function(){ alert('Ссылка скопирована'); });
-      } else {
-        var t = document.createElement('textarea');
-        t.value = uri; document.body.appendChild(t);
-        t.select(); document.execCommand('copy');
-        document.body.removeChild(t); alert('Ссылка скопирована');
-      }
+    // Settings
+    if (document.activeElement !== document.getElementById('set-bin_base')) {
+      document.getElementById('set-bin_base').value = (state.settings && state.settings.bin_base) || '';
     }
-  </script>
+    if (document.activeElement !== document.getElementById('set-suppress_rst')) {
+      document.getElementById('set-suppress_rst').value = String((state.settings && state.settings.suppress_rst) || '1');
+    }
+    if (document.activeElement !== document.getElementById('set-use_iptables')) {
+      document.getElementById('set-use_iptables').value = String((state.settings && state.settings.use_iptables) || '0');
+    }
+
+    // Instances list
+    var container = document.getElementById('instances');
+    container.innerHTML = '';
+    (state.instances || []).forEach(function (inst) {
+      var div = document.createElement('div');
+      div.className = 'instance';
+      var stateText = inst.enabled ? (running ? 'запущен' : 'включен') : 'выключен';
+      div.innerHTML =
+        '<div class="instance-header">' +
+        '  <div><span class="instance-name">' + escapeHtml(inst.label || inst.id) + '</span>' +
+        '  <span class="instance-meta">' + escapeHtml(inst.transport) + ' / ' + escapeHtml(inst.exit_mode) + '</span></div>' +
+        '  <button class="danger" data-del="' + escapeHtml(inst.id) + '">Удалить</button>' +
+        '</div>' +
+        '<div class="instance-meta">' + stateText + '</div>';
+      container.appendChild(div);
+    });
+
+    if (!state.instances || !state.instances.length) {
+      container.innerHTML = '<div class="hint" style="padding:12px">Нет инстансов. Добавьте первый для подключения телефона.</div>';
+    }
+
+    // Delete buttons
+    container.querySelectorAll('[data-del]').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('Удалить инстанс ' + btn.dataset.del + '?')) return;
+        api('del_instance', { id: btn.dataset.del })
+          .then(load)
+          .then(function () { toast('Инстанс удалён'); })
+          .catch(function (e) { toast('Ошибка: ' + e, true); });
+      };
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function showForm(inst) {
+    document.getElementById('form-card').classList.remove('hidden');
+    document.getElementById('btn-add').classList.add('hidden');
+    document.getElementById('form-title').textContent = inst ? 'Изменить инстанс' : 'Новый инстанс';
+    document.getElementById('f-id').value = inst ? inst.id : '';
+    document.getElementById('f-label').value = inst ? inst.label : '';
+    document.getElementById('f-transport').value = inst ? inst.transport : 'yandex';
+    document.getElementById('f-exit_mode').value = inst ? inst.exit_mode : 'l3';
+    document.getElementById('f-url').value = inst ? inst.url : '';
+    document.getElementById('f-cups-rooms').value = inst ? inst.url : '';
+    document.getElementById('f-max_token').value = inst ? inst.max_token : '';
+    document.getElementById('f-max_uid').value = inst ? inst.max_uid : '';
+    document.getElementById('f-codec').value = inst ? inst.codec : 'batched';
+    document.getElementById('f-encryption_key').value = inst ? inst.encryption_key : '';
+    document.getElementById('f-local_ip').value = inst ? inst.local_ip : '';
+    document.getElementById('f-listen_port').value = inst ? inst.listen_port : '4545';
+    updateTransportFields();
+  }
+
+  function hideForm() {
+    document.getElementById('form-card').classList.add('hidden');
+    document.getElementById('btn-add').classList.remove('hidden');
+  }
+
+  function updateTransportFields() {
+    var t = document.getElementById('f-transport').value;
+    document.getElementById('fields-yandex').classList.toggle('hidden', t !== 'yandex' && t !== 'vyandex' && t !== 'mailru');
+    document.getElementById('fields-oneme').classList.toggle('hidden', t !== 'oneme');
+    document.getElementById('fields-cupsonline').classList.toggle('hidden', t !== 'cupsonline');
+  }
+
+  document.getElementById('f-transport').onchange = updateTransportFields;
+  document.getElementById('btn-add').onclick = function () { showForm(null); };
+  document.getElementById('btn-cancel').onclick = hideForm;
+
+  document.getElementById('btn-save-instance').onclick = function () {
+    var transport = document.getElementById('f-transport').value;
+    var urlField = transport === 'cupsonline' ? 'f-cups-rooms' : 'f-url';
+    var payload = {
+      id: document.getElementById('f-id').value || null,
+      label: document.getElementById('f-label').value,
+      transport: transport,
+      exit_mode: document.getElementById('f-exit_mode').value,
+      url: document.getElementById(urlField).value,
+      max_token: document.getElementById('f-max_token').value,
+      max_uid: document.getElementById('f-max_uid').value,
+      codec: document.getElementById('f-codec').value,
+      encryption_key: document.getElementById('f-encryption_key').value,
+      local_ip: document.getElementById('f-local_ip').value.trim(),
+      listen_port: document.getElementById('f-listen_port').value.trim() || '4545',
+      enabled: true
+    };
+    api('save_instance', payload)
+      .then(function () { hideForm(); return load(); })
+      .then(function () { toast('Инстанс сохранён'); })
+      .catch(function (e) { toast('Ошибка: ' + e, true); });
+  };
+
+  document.getElementById('btn-save-settings').onclick = function () {
+    api('save_settings', {
+      bin_base: document.getElementById('set-bin_base').value.trim(),
+      suppress_rst: document.getElementById('set-suppress_rst').value,
+      use_iptables: document.getElementById('set-use_iptables').value
+    })
+      .then(load)
+      .then(function () { toast('Настройки сохранены'); })
+      .catch(function (e) { toast('Ошибка: ' + e, true); });
+  };
+
+  document.getElementById('btn-restart').onclick = function () {
+    api('restart').then(load).then(function () { toast('Сервис перезапущен'); });
+  };
+
+  load();
+})();
+</script>
 </body>
 </html>

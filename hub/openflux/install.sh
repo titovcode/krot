@@ -16,7 +16,7 @@
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.1"
+MODULE_VERSION="0.2.3"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
@@ -261,15 +261,12 @@ install_webpanel() {
     if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/www/index.html" ]; then
         mkdir -p "$OF_WWW"
         cp "$OF_PAYLOAD_DIR/www/index.html" "$OF_WWW/index.html"
-        [ -f "$OF_PAYLOAD_DIR/www/qrcode.js" ] && cp "$OF_PAYLOAD_DIR/www/qrcode.js" "$OF_WWW/qrcode.js"
     else
         mkdir -p "$OF_WWW"
         http_download "${RAW_BASE}/www/index.html" "$OF_WWW/index.html" \
             || fail "Failed to download the web panel (does your repo contain hub/${MODULE_ID}/www/index.html?)"
-        http_download "${RAW_BASE}/www/qrcode.js" "$OF_WWW/qrcode.js" 2>/dev/null || true
     fi
     chmod 0644 "$OF_WWW/index.html"
-    [ -f "$OF_WWW/qrcode.js" ] && chmod 0644 "$OF_WWW/qrcode.js"
 
     cat > "$OF_WWW/state.js" <<'SH'
 window.OPENFLUX = { instances: [], settings: {} };

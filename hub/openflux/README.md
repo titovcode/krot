@@ -44,7 +44,8 @@ Upstream-проект: <https://github.com/p1neappleXpress/OpenFlux>
   iptables-цепочку `KROT_OPENFLUX` при `use_iptables=1`).
 - **Инстансы** — один инстанс = один транспорт+URL = один телефон
   (issue #44: «одна ссылка = одно устройство»). Для второго телефона — вторая
-  ссылка и второй инстанс.
+  ссылка и второй инстанс. Инстанс хранит `local_ip` (egress IP для l3) и
+  `listen_port` (SOCKS-порт для l4).
 - На Android отключите Private DNS: OpenFlux пропускает только TCP, UDP/53 и
   DoT не маскируются.
 

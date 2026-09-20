@@ -1,0 +1,3 @@
+# Build output of build-binaries.sh — binaries are shipped via GitHub releases,
+# not committed to the repo.
+dist/
