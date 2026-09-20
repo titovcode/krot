@@ -70,6 +70,7 @@
     <div class="row">
       <span id="svc-status" class="status">Загрузка...</span>
       <button id="btn-restart" class="secondary">Перезапустить</button>
+      <button id="btn-logs" class="secondary">Логи</button>
     </div>
     <div class="row" id="fetch-row" style="margin-top:12px">
       <button id="btn-fetch-binary" class="secondary">Скачать бинарник</button>
@@ -369,6 +370,28 @@
 
   document.getElementById('btn-restart').onclick = function () {
     api('restart').then(load).then(function () { toast('Сервис перезапущен'); });
+  };
+
+  document.getElementById('btn-logs').onclick = function () {
+    var pre = document.getElementById('log-view');
+    if (pre && !pre.classList.contains('hidden')) {
+      pre.classList.add('hidden');
+      return;
+    }
+    if (!pre) {
+      pre = document.createElement('pre');
+      pre.id = 'log-view';
+      pre.className = 'card';
+      pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:320px;overflow:auto';
+      document.querySelector('.card').appendChild(pre);
+    }
+    pre.textContent = 'Загрузка логов...';
+    pre.classList.remove('hidden');
+    pre.scrollIntoView({ behavior: 'smooth' });
+    api('logs').then(function (r) {
+      pre.textContent = (r && r.logs) || 'Нет логов';
+      pre.scrollIntoView({ behavior: 'smooth' });
+    }).catch(function (e) { pre.textContent = 'Ошибка: ' + e; });
   };
 
   var fetchTimer = null;

@@ -351,6 +351,33 @@ case "$ACTION" in
             emit '{"state":"idle"}'
         fi
         ;;
+    logs)
+        # Last ~40 lines relevant to openflux: the runner (krot-openflux[*]),
+        # the binary itself, and procd service events.
+        {
+            echo "=== service ==="
+            "$INIT" status 2>/dev/null || echo "unknown"
+            echo "=== binary ==="
+            if [ -x /opt/openflux/openflux ]; then
+                ls -l /opt/openflux/openflux 2>/dev/null
+                file /opt/openflux/openflux 2>/dev/null || echo "present"
+            else
+                echo "missing"
+            fi
+            echo "=== logread ==="
+            if command -v logread >/dev/null 2>&1; then
+                logread 2>/dev/null | grep -E 'krot-openflux|openflux' | tail -n 40
+            else
+                # fall back to the kernel ring buffer
+                dmesg 2>/dev/null | grep -E 'krot-openflux|openflux' | tail -n 40
+            fi
+            echo "=== fetch log ==="
+            tail -n 10 /tmp/openflux-fetch.log 2>/dev/null || echo "(none)"
+        } > /tmp/of-logs.txt 2>&1
+        # JSON-escape the whole dump: backslash, quote, then join lines with \n.
+        ESC="$(awk 'BEGIN{ORS=""} {gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); if (NR>1) printf "\\n"; print}' /tmp/of-logs.txt 2>/dev/null)"
+        printf 'Content-Type: application/json\r\n\r\n{"ok":true,"logs":"%s"}\n' "$ESC"
+        ;;
     save_settings)
         [ -f "/etc/config/$CONFIG" ] || { emit '{"ok":false,"error":"no config"}'; exit 0; }
         uci -q set "$CONFIG.settings.bin_base=$(json_get "$PAYLOAD" bin_base)"
