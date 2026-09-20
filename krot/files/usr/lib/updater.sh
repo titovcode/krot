@@ -1995,6 +1995,16 @@ hub_get_modules() {
     echo "$result"
 }
 
+hub_refresh_modules_cache() {
+    # Regenerate /tmp/krot-hub-modules.json after a module install/remove
+    # so LuCI's Modules tab shows the new state without forcing a full update.
+    local cache_file="/tmp/krot-hub-modules.json"
+    local modules_json
+    modules_json="$(hub_get_modules 2>/dev/null)" || return 0
+    [ -n "$modules_json" ] || return 0
+    printf '%s\n' "$modules_json" > "$cache_file" 2>/dev/null || true
+}
+
 hub_add_source() {
     local source_arg="$1"
     local repo module_id branch
@@ -2213,6 +2223,10 @@ hub_install_module() {
         /etc/init.d/krot restart 2>/dev/null || true
     fi
 
+    # Refresh the cached hub module list so LuCI shows the new state
+    # without requiring a full K.R.O.T. update.
+    hub_refresh_modules_cache
+
     updates_success "hub" "hub_install_${module_id}" "${module_id} has been installed" "" "$installed_version" 1 "latest"
 }
 
@@ -2283,6 +2297,10 @@ hub_remove_module() {
             /etc/init.d/krot restart 2>/dev/null || true
         fi
 
+        # Refresh the cached hub module list so LuCI shows the new state
+        # without requiring a full K.R.O.T. update.
+        hub_refresh_modules_cache
+
         updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
         return
     fi
@@ -2329,6 +2347,10 @@ hub_remove_module() {
         updates_log "Restarting K.R.O.T. after ${module_id} removal"
         /etc/init.d/krot reload 2>/dev/null || true
     fi
+
+    # Refresh the cached hub module list so LuCI shows the new state
+    # without requiring a full K.R.O.T. update.
+    hub_refresh_modules_cache
 
     updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
 }
