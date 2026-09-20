@@ -8,104 +8,128 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px 20px 40px;
-    background: #0f1115; color: #e6e8eb;
+    margin: 0; padding: 20px 16px 48px;
+    background: #0d1017; color: #e6e8eb;
     font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    max-width: 640px; margin: 0 auto;
+    max-width: 720px; margin: 0 auto;
   }
-  h1 { font-size: 22px; margin: 4px 0 8px; }
-  h2 { font-size: 16px; margin: 24px 0 12px; color: #c9d0d8; }
-  .sub { color: #9aa3ae; font-size: 14px; margin: 0 0 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .2px; }
+  h2 {
+    font-size: 13px; margin: 28px 0 10px; color: #8a94a3;
+    text-transform: uppercase; letter-spacing: .8px; font-weight: 600;
+  }
+  .sub { color: #9aa3ae; font-size: 13px; margin: 6px 0 20px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .badge::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .badge.ok   { background: rgba(55,169,105,.12); color: #4cc38a; border-color: rgba(76,195,138,.35); }
+  .badge.warn { background: rgba(221,160,44,.12); color: #e5b23e; border-color: rgba(229,178,62,.35); }
+  .badge.err  { background: rgba(200,60,60,.12);  color: #e06767; border-color: rgba(224,103,103,.35); }
   .card {
-    background: #161a22; border: 1px solid #2c3340; border-radius: 12px;
-    padding: 16px; margin: 0 0 16px;
+    background: #141924; border: 1px solid #262f3d; border-radius: 14px;
+    padding: 16px; margin: 0 0 12px;
   }
-  .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  details.card { padding: 0; }
+  details.card > summary {
+    list-style: none; cursor: pointer; padding: 14px 16px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-weight: 600; font-size: 14px; user-select: none;
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::after { content: '\25B8'; color: #5c6675; transition: transform .15s; font-size: 13px; }
+  details.card[open] > summary::after { transform: rotate(90deg); }
+  details.card > .card-body { padding: 4px 16px 16px; border-top: 1px solid #1e2530; }
+  .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; flex-wrap: wrap; }
   label { color: #9aa3ae; min-width: 120px; font-size: 13px; }
   input[type=text], select {
-    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
+    background: #0f1420; border: 1px solid #2b3442; border-radius: 8px;
     color: #e6e8eb; padding: 8px 10px; font-size: 13px; flex: 1;
-    font-family: inherit;
+    font-family: inherit; outline: none; min-width: 0;
   }
-  select { max-width: 200px; }
+  input[type=text]:focus, select:focus { border-color: #3b82f6; }
+  select { max-width: 220px; flex: none; }
   button {
     background: #3b82f6; color: #fff; border: 0; border-radius: 8px;
-    padding: 9px 16px; font-size: 13px; cursor: pointer;
+    padding: 9px 16px; font-size: 13px; cursor: pointer; font-weight: 600;
+    transition: filter .12s;
   }
-  button.secondary { background: #2c3340; }
-  button.danger { background: #b3403a; padding: 6px 12px; font-size: 12px; }
-  .status {
-    display: inline-block; padding: 4px 12px; border-radius: 6px; font-size: 13px;
+  button:hover { filter: brightness(1.12); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
+  button.secondary { background: #262f3d; }
+  button.ghost {
+    background: transparent; border: 1px solid #2b3442; color: #9fb3d1;
+    padding: 6px 12px; font-size: 12px;
   }
-  .status.ok { background: rgba(55,169,105,0.25); color: #37a169; }
-  .status.warn { background: rgba(221,160,44,0.25); color: #dda02c; }
-  .status.err { background: rgba(200,60,60,0.25); color: #d06060; }
-  .hint { color: #8a929c; font-size: 12px; line-height: 1.5; }
-  code { color: #8fd3ff; }
+  button.danger {
+    background: transparent; border: 1px solid rgba(224,103,103,.4); color: #e06767;
+    padding: 6px 12px; font-size: 12px;
+  }
+  button.danger:hover { background: rgba(224,103,103,.12); filter: none; }
+  .hint { color: #8a929c; font-size: 12px; line-height: 1.6; }
+  code { color: #8fd3ff; background: rgba(143,211,255,.08); padding: 1px 5px; border-radius: 4px; }
   .instance {
-    background: #1a1e26; border: 1px solid #2c3340; border-radius: 8px;
-    padding: 12px; margin: 8px 0;
+    background: #141924; border: 1px solid #262f3d; border-radius: 12px;
+    padding: 14px 16px; margin: 0 0 10px;
   }
-  .instance-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .instance-name { font-weight: 600; }
-  .instance-meta { color: #9aa3ae; font-size: 12px; }
+  .instance-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .instance-name { font-weight: 600; font-size: 14px; }
+  .instance-meta { color: #8a94a3; font-size: 12px; margin-top: 3px; }
+  .instance-actions { display: flex; gap: 8px; flex: none; }
+  .instance-url {
+    color: #5f8fce; font-size: 12px; margin-top: 8px; word-break: break-all;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+  .dot.on { background: #4cc38a; } .dot.off { background: #5c6675; }
   .form-grid { display: grid; gap: 10px; }
   .form-row { display: flex; gap: 10px; align-items: center; }
-  .form-row label { min-width: 100px; }
-  .hidden { display: none; }
-  .transport-fields { margin-top: 10px; padding-top: 10px; border-top: 1px solid #2c3340; }
+  .form-row label { min-width: 110px; flex: none; }
+  .hidden { display: none !important; }
+  .transport-fields { margin-top: 4px; padding-top: 12px; border-top: 1px dashed #262f3d; }
+  pre.log-view {
+    background: #0a0d13; border: 1px solid #262f3d; border-radius: 10px;
+    padding: 12px; white-space: pre-wrap; word-break: break-all;
+    font-size: 11px; line-height: 1.5; max-height: 380px; overflow: auto;
+    color: #b8c2ce; margin: 12px 0 0;
+  }
   .toast {
     position: fixed; right: 16px; bottom: 16px; z-index: 99;
-    background: #161a22; border: 1px solid #3b82f6; border-radius: 8px;
-    padding: 12px 16px; font-size: 13px;
+    background: #141924; border: 1px solid #3b82f6; border-radius: 10px;
+    padding: 12px 16px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
   }
-  .toast.error { border-color: #b3403a; }
+  .toast.error { border-color: #e06767; }
+  ol.steps { margin: 0; padding-left: 20px; }
+  ol.steps li { margin: 6px 0; }
 </style>
 </head>
 <body>
-  <h1>OpenFlux Exit Node</h1>
-  <p class="sub">Выходная нода OpenFlux. Телефон с <b>OpenFluxAndroid</b> туннелирует трафик через выбранный транспорт на этот роутер.</p>
+  <div class="header">
+    <div>
+      <h1>OpenFlux Exit Node</h1>
+      <p class="sub">Выходная нода OpenFlux. Телефон с <b>OpenFluxAndroid</b> туннелирует трафик через выбранный транспорт на этот роутер.</p>
+    </div>
+    <span id="svc-status" class="badge warn">Загрузка…</span>
+  </div>
 
   <div class="card">
-    <div class="row">
-      <span id="svc-status" class="status">Загрузка...</span>
+    <div class="row" style="margin:0">
       <button id="btn-restart" class="secondary">Перезапустить</button>
       <button id="btn-logs" class="secondary">Логи</button>
-    </div>
-    <div class="row" id="fetch-row" style="margin-top:12px">
-      <button id="btn-fetch-binary" class="secondary">Скачать бинарник</button>
+      <button id="btn-fetch-binary" class="ghost">Скачать бинарник</button>
       <span id="fetch-status" class="hint"></span>
     </div>
-    <div class="row" style="margin-top:12px">
-      <label>bin_base</label>
-      <input type="text" id="set-bin_base" placeholder="https://github.com/.../releases/download/...">
-    </div>
-    <p class="hint">URL с бинарниками <code>openflux-linux-*</code>. Пусто = попытка скачать из релиза <code>openflux-0.1.0</code> репозитория модуля. Если вставил ссылку на страницу релиза (<code>/releases/tag/...</code>), она автоматически исправится на <code>/releases/download/...</code>. Нет бинарника — нажми «Скачать бинарник».</p>
-    <div class="row">
-      <label>Подавление RST</label>
-      <select id="set-suppress_rst">
-        <option value="1">включено (рекомендуется для l3)</option>
-        <option value="0">отключено</option>
-      </select>
-    </div>
-    <p class="hint">В l3-режиме ядро шлёт TCP RST на чужие соединения и рвёт туннель. Модуль ставит nft-таблицу <code>krot_openflux</code> (или iptables-цепочку <code>KROT_OPENFLUX</code>).</p>
-    <div class="row">
-      <label>Брандмауэр</label>
-      <select id="set-use_iptables">
-        <option value="0">nftables</option>
-        <option value="1">iptables</option>
-      </select>
-    </div>
-    <div class="row">
-      <button id="btn-save-settings">Сохранить настройки</button>
-    </div>
+    <pre id="log-view" class="log-view hidden"></pre>
   </div>
 
   <h2>Инстансы</h2>
   <div id="instances"></div>
 
   <div class="card hidden" id="form-card">
-    <h3 id="form-title" style="margin:0 0 12px 0; font-size:14px">Новый инстанс</h3>
+    <h3 id="form-title" style="margin:0 0 14px; font-size:14px">Новый инстанс</h3>
     <input type="hidden" id="f-id">
     <div class="form-grid">
       <div class="form-row">
@@ -133,7 +157,7 @@
       <div class="transport-fields" id="fields-yandex">
         <div class="form-row">
           <label>URL документа</label>
-          <input type="text" id="f-url" placeholder="https://docs.yandex.ru/...">
+          <input type="text" id="f-url" placeholder="https://docs.yandex.ru/... или https://disk.yandex.ru/edit/d/...">
         </div>
       </div>
 
@@ -175,7 +199,7 @@
         <input type="text" id="f-listen_port" placeholder="4545 (только l4)">
       </div>
     </div>
-    <div class="row" style="margin-top:16px">
+    <div class="row" style="margin-top:16px; margin-bottom:0">
       <button id="btn-save-instance">Сохранить</button>
       <button id="btn-cancel" class="secondary">Отмена</button>
     </div>
@@ -183,14 +207,49 @@
 
   <button id="btn-add">+ Добавить инстанс</button>
 
-  <h2>Как подключить телефон</h2>
-  <div class="card hint">
-    <p>1. Установи <code>OpenFluxAndroid</code> на телефон</p>
-    <p>2. В приложении выбери тот же транспорт и введи те же параметры (URL/токен/комнату)</p>
-    <p>3. Нажми «Подключить»</p>
-    <p style="margin-top:12px">Бинарник должен лежать в <code>/opt/openflux/openflux</code>. Собери: <code>sh hub/openflux/build-binaries.sh</code>, скопируй: <code>scp dist/openflux-linux-arm64 root@192.168.1.1:/tmp/openflux</code>, затем нажми «Обновить» в Hub.</p>
-  </div>
+  <h2>Настройки</h2>
+  <details class="card">
+    <summary>Подключение и брандмауэр</summary>
+    <div class="card-body">
+      <div class="row">
+        <label>bin_base</label>
+        <input type="text" id="set-bin_base" placeholder="https://github.com/.../releases/download/...">
+      </div>
+      <p class="hint">URL с бинарниками <code>openflux-linux-&lt;arch&gt;</code>. Пусто — закреплённый релиз модуля.</p>
+      <div class="row">
+        <label>Подавление RST</label>
+        <select id="set-suppress_rst">
+          <option value="1">включено (рекомендуется для l3)</option>
+          <option value="0">отключено</option>
+        </select>
+      </div>
+      <p class="hint">В l3-режиме ядро шлёт TCP RST на чужие соединения и рвёт туннель. Модуль ставит nft-таблицу <code>krot_openflux</code> (или iptables-цепочку <code>KROT_OPENFLUX</code>).</p>
+      <div class="row">
+        <label>Брандмауэр</label>
+        <select id="set-use_iptables">
+          <option value="0">nftables</option>
+          <option value="1">iptables</option>
+        </select>
+      </div>
+      <div class="row" style="margin-bottom:0">
+        <button id="btn-save-settings">Сохранить настройки</button>
+      </div>
+    </div>
+  </details>
 
+  <h2>Помощь</h2>
+  <details class="card">
+    <summary>Как подключить телефон</summary>
+    <div class="card-body hint">
+      <ol class="steps">
+        <li>Установите <code>OpenFluxAndroid</code> на телефон</li>
+        <li>В приложении выберите тот же транспорт и введите те же параметры (URL/токен/комнату)</li>
+        <li>На Android отключите <b>Private DNS</b> (OpenFlux пропускает только TCP, UDP/53 и DoT не маскируются)</li>
+        <li>Нажмите «Подключить»</li>
+      </ol>
+      <p style="margin-top:12px">Одна ссылка = одно устройство: для второго телефона создайте вторую ссылку и второй инстанс. Бинарник должен лежать в <code>/opt/openflux/openflux</code>.</p>
+    </div>
+  </details>
 <script>
 (function () {
   'use strict';
@@ -240,16 +299,15 @@
 
     if (!state.bin_present) {
       statusEl.textContent = 'Нет бинарника';
-      statusEl.className = 'status err';
+      statusEl.className = 'badge err';
     } else if (running) {
       statusEl.textContent = 'Работает';
-      statusEl.className = 'status ok';
+      statusEl.className = 'badge ok';
     } else {
       statusEl.textContent = 'Остановлен';
-      statusEl.className = 'status warn';
+      statusEl.className = 'badge warn';
     }
 
-    // Settings
     if (document.activeElement !== document.getElementById('set-bin_base')) {
       document.getElementById('set-bin_base').value = (state.settings && state.settings.bin_base) || '';
     }
@@ -260,28 +318,46 @@
       document.getElementById('set-use_iptables').value = String((state.settings && state.settings.use_iptables) || '0');
     }
 
-    // Instances list
     var container = document.getElementById('instances');
     container.innerHTML = '';
     (state.instances || []).forEach(function (inst) {
       var div = document.createElement('div');
       div.className = 'instance';
+      var active = inst.enabled && running;
       var stateText = inst.enabled ? (running ? 'запущен' : 'включен') : 'выключен';
+      var urlLine = inst.url
+        ? '<div class="instance-url" title="' + escapeHtml(inst.url) + '">' + escapeHtml(inst.url) + '</div>'
+        : '';
       div.innerHTML =
         '<div class="instance-header">' +
-        '  <div><span class="instance-name">' + escapeHtml(inst.label || inst.id) + '</span>' +
-        '  <span class="instance-meta">' + escapeHtml(inst.transport) + ' / ' + escapeHtml(inst.exit_mode) + '</span></div>' +
-        '  <button class="danger" data-del="' + escapeHtml(inst.id) + '">Удалить</button>' +
-        '</div>' +
-        '<div class="instance-meta">' + stateText + '</div>';
+        '  <div style="min-width:0">' +
+        '    <span class="dot ' + (active ? 'on' : 'off') + '"></span>' +
+        '    <span class="instance-name">' + escapeHtml(inst.label || inst.id) + '</span>' +
+        '    <div class="instance-meta">' + escapeHtml(inst.transport) + ' / ' + escapeHtml(inst.exit_mode) + ' \u00b7 ' + stateText + '</div>' +
+        '  </div>' +
+        '  <div class="instance-actions">' +
+        '    <button class="ghost" data-edit="' + escapeHtml(inst.id) + '">Изменить</button>' +
+        '    <button class="danger" data-del="' + escapeHtml(inst.id) + '">Удалить</button>' +
+        '  </div>' +
+        '</div>' + urlLine;
       container.appendChild(div);
     });
 
     if (!state.instances || !state.instances.length) {
-      container.innerHTML = '<div class="hint" style="padding:12px">Нет инстансов. Добавьте первый для подключения телефона.</div>';
+      container.innerHTML = '<div class="hint" style="padding:4px 0 12px">Нет инстансов. Добавьте первый для подключения телефона.</div>';
     }
 
-    // Delete buttons
+    // Edit buttons: open the form pre-filled with the instance values.
+    container.querySelectorAll('[data-edit]').forEach(function (btn) {
+      btn.onclick = function () {
+        var inst = (state.instances || []).filter(function (i) { return i.id === btn.dataset.edit; })[0];
+        if (inst) {
+          showForm(inst);
+          document.getElementById('form-card').scrollIntoView({ behavior: 'smooth' });
+        }
+      };
+    });
+
     container.querySelectorAll('[data-del]').forEach(function (btn) {
       btn.onclick = function () {
         if (!confirm('Удалить инстанс ' + btn.dataset.del + '?')) return;
@@ -374,23 +450,14 @@
 
   document.getElementById('btn-logs').onclick = function () {
     var pre = document.getElementById('log-view');
-    if (pre && !pre.classList.contains('hidden')) {
+    if (!pre.classList.contains('hidden')) {
       pre.classList.add('hidden');
       return;
     }
-    if (!pre) {
-      pre = document.createElement('pre');
-      pre.id = 'log-view';
-      pre.className = 'card';
-      pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:11px;max-height:320px;overflow:auto';
-      document.querySelector('.card').appendChild(pre);
-    }
     pre.textContent = 'Загрузка логов...';
     pre.classList.remove('hidden');
-    pre.scrollIntoView({ behavior: 'smooth' });
     api('logs').then(function (r) {
       pre.textContent = (r && r.logs) || 'Нет логов';
-      pre.scrollIntoView({ behavior: 'smooth' });
     }).catch(function (e) { pre.textContent = 'Ошибка: ' + e; });
   };
 
