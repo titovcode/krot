@@ -90,7 +90,10 @@ http_download() {
     fi
 }
 
-is_elf() { [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
+# ELF magic without od/hexdump: "\177ELF" has no NUL byte, so command
+# substitution preserves it and = compares byte-for-byte. Some busybox
+# firmships ship without coreutils od (that broke the panel download).
+is_elf() { [ "$(head -c 4 "$1" 2>/dev/null)" = "$(printf '\177ELF')" ]; }
 
 # ---------------------------------------------------------------------------
 # 0. Migrate/clean leftovers from the 0.1.x LuCI-based layout (0.2.x ships a
@@ -168,42 +171,17 @@ install_binary() {
         */releases/tag/*) base="$(printf '%s' "$base" | sed 's,/releases/tag/,/releases/download/,')" ;;
     esac
 
-    local url="${base}/openflux-linux-${BIN_LABEL}"
     msg "Architecture: $ARCH (label: $BIN_LABEL)"
-    msg "Downloading openflux from ${url} ..."
-    if http_download "$url" "$OF_TMP/openflux" 2>/dev/null && [ -s "$OF_TMP/openflux" ]; then
-        if is_elf "$OF_TMP/openflux"; then
-            mkdir -p "$OF_DIR"
-            mv "$OF_TMP/openflux" "$OF_BIN"
-            chmod 0755 "$OF_BIN"
+    msg "Downloading openflux from ${base}/openflux-linux-${BIN_LABEL} ..."
+
+    # Delegate to the shared downloader (same code path as the panel button)
+    # so install and "Скачать бинарник" always behave identically. It exits 0
+    # on success and leaves the binary in place.
+    if [ -x "$OF_DIR/fetch-binary.sh" ]; then
+        OF_BIN_BASE="$base" sh "$OF_DIR/fetch-binary.sh" 2>/dev/null || true
+        if [ -x "$OF_BIN" ]; then
             msg "installed openflux (downloaded from ${base})"
             return 0
-        else
-            rm -f "$OF_TMP/openflux"
-            warn "Downloaded file is not an ELF binary (probably a 404 page)."
-        fi
-    else
-        warn "Download failed or file is empty."
-    fi
-
-    # Path 2: scan the upstream OpenFlux releases for a matching asset name
-    # (in case Linux assets get published there).
-    msg "Scanning ${UPSTREAM_RELEASE_REPO} releases for a Linux binary..."
-    local release_json asset_url
-    release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20" 2>/dev/null)" || release_json=""
-    if [ -n "$release_json" ]; then
-        asset_url="$(printf '%s\n' "$release_json" \
-            | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
-            | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
-        if [ -n "$asset_url" ]; then
-            msg "Downloading $(basename "$asset_url")..."
-            if http_download "$asset_url" "$OF_TMP/openflux" && [ -s "$OF_TMP/openflux" ] && is_elf "$OF_TMP/openflux"; then
-                mkdir -p "$OF_DIR"
-                mv "$OF_TMP/openflux" "$OF_BIN"
-                chmod 0755 "$OF_BIN"
-                msg "installed openflux (upstream release)"
-                return 0
-            fi
         fi
     fi
 
@@ -593,9 +571,10 @@ install_fetch_binary() {
     cat > "$OF_DIR/fetch-binary.sh" <<'FETCHSH'
 #!/bin/sh
 # fetch-binary.sh — download the openflux binary for this router's arch.
-# Triggered by the "Скачать бинарник" button on the web panel.
-set -e
-
+# Used both at module install and by the panel "Скачать бинарник" button,
+# so both paths behave identically.
+# Writes /tmp/openflux-fetch.status for the panel poller; when FETCH_RESTART=1
+# (panel button) it also regenerates state.js and restarts the service.
 OF_DIR="/opt/openflux"
 OF_BIN="$OF_DIR/openflux"
 OF_TAG="openflux-0.1.0"
@@ -603,24 +582,53 @@ OF_RELEASE_REPO="${OF_RELEASE_REPO:-titovcode/krot}"
 UPSTREAM_RELEASE_REPO="p1neappleXpress/OpenFlux"
 GITHUB_API="https://api.github.com"
 LOG="/tmp/openflux-fetch.log"
+STATUS_FILE="/tmp/openflux-fetch.status"
+PID_FILE="/tmp/openflux-fetch.pid"
 
 log() { echo "$*"; }
+set_status() { printf '%s\n%s\n' "$1" "$2" > "$STATUS_FILE" 2>/dev/null || true; }
 
-is_elf() { [ "$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "7f454c46" ]; }
+is_elf() { [ "$(head -c 4 "$1" 2>/dev/null)" = "$(printf '\177ELF')" ]; }
+
+# Same proxy handling as install.sh: route through K.R.O.T.'s mixed inbound
+# when the user opted into downloading lists/updates via proxy.
+PROXY_ADDR=""
+if command -v uci >/dev/null 2>&1 && [ -f /etc/config/krot ]; then
+    if uci -q get krot.settings.download_lists_via_proxy 2>/dev/null | grep -q '1'; then
+        PROXY_ADDR="http://127.0.0.1:4534"
+    fi
+fi
 
 http_get() {
-    if command -v curl >/dev/null 2>&1; then curl -fsSL --max-time 30 "$1";
-    elif command -v wget >/dev/null 2>&1; then wget -qO- --timeout=30 "$1";
-    else echo "curl or wget required"; exit 1; fi
+    if [ -n "$PROXY_ADDR" ] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 30 -x "$PROXY_ADDR" "$1"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 30 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- --timeout=30 "$1"
+    else
+        log "ERROR: curl or wget is required"; set_status failed "no curl/wget"; exit 1
+    fi
 }
 
 http_download() {
-    if command -v curl >/dev/null 2>&1; then curl -fSL --connect-timeout 15 --max-time 900 "$1" -o "$2";
-    elif command -v wget >/dev/null 2>&1; then wget -qO "$2" --timeout=900 "$1";
-    else echo "curl or wget required"; exit 1; fi
+    # http_download <url> <dest>
+    if [ -n "$PROXY_ADDR" ] && command -v curl >/dev/null 2>&1; then
+        curl -fSL --connect-timeout 15 --max-time 900 -x "$PROXY_ADDR" "$1" -o "$2"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fSL --connect-timeout 15 --max-time 900 "$1" -o "$2"
+    elif [ -n "$PROXY_ADDR" ] && command -v wget >/dev/null 2>&1; then
+        http_proxy="$PROXY_ADDR" https_proxy="$PROXY_ADDR" wget -qO "$2" --timeout=900 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$2" --timeout=900 "$1"
+    else
+        log "ERROR: curl or wget is required"; set_status failed "no curl/wget"; exit 1
+    fi
 }
 
-[ -x "$OF_BIN" ] && { log "binary already present at $OF_BIN"; exit 0; }
+echo $$ > "$PID_FILE"
+
+[ -x "$OF_BIN" ] && { log "binary already present at $OF_BIN"; set_status done "already installed"; exit 0; }
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -631,7 +639,7 @@ case "$ARCH" in
     mipsel)        BIN_LABEL="mipsle" ;;
     mips)          BIN_LABEL="mips" ;;
     mips64el)      BIN_LABEL="mips64le" ;;
-    *) log "Unsupported architecture: $ARCH"; exit 1 ;;
+    *) log "Unsupported architecture: $ARCH"; set_status failed "unsupported arch $ARCH"; exit 1 ;;
 esac
 
 BASE="${OF_BIN_BASE:-}"
@@ -647,43 +655,51 @@ esac
 [ -n "$BASE" ] || BASE="https://github.com/${OF_RELEASE_REPO}/releases/download/${OF_TAG}"
 
 URL="${BASE}/openflux-linux-${BIN_LABEL}"
-log "arch=$ARCH label=$BIN_LABEL"
-log "downloading $URL"
+log "arch=$ARCH label=$BIN_LABEL proxy=${PROXY_ADDR:-none}"
+set_status running "arch=$ARCH скачиваю $URL"
 
 TMP="$(mktemp -d /tmp/openflux-fetch.XXXXXX 2>/dev/null || echo /tmp/openflux-fetch.$$)"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
-if http_download "$URL" "$TMP/openflux" 2>/dev/null && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
+place_binary() {
     mkdir -p "$OF_DIR"
-    mv "$TMP/openflux" "$OF_BIN"
+    mv "$TMP/openflux" "$OF_BIN" 2>/dev/null || cp "$TMP/openflux" "$OF_BIN"
     chmod 0755 "$OF_BIN"
-    log "installed openflux ($BIN_LABEL) from $BASE"
-    exit 0
-fi
-log "download from $URL failed"
+}
 
-# Fallback: scan upstream releases for a matching asset.
-log "scanning ${UPSTREAM_RELEASE_REPO} releases..."
-release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20" 2>/dev/null)" || release_json=""
-if [ -n "$release_json" ]; then
-    asset_url="$(printf '%s\n' "$release_json" \
-        | grep -o "\"browser_download_url\"[[:space:]]*:[[:space:]]*\"[^\"]*openflux-linux-${BIN_LABEL}\"" \
-        | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
-    if [ -n "$asset_url" ]; then
-        log "downloading $(basename "$asset_url")"
-        if http_download "$asset_url" "$TMP/openflux" && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
-            mkdir -p "$OF_DIR"
-            mv "$TMP/openflux" "$OF_BIN"
-            chmod 0755 "$OF_BIN"
-            log "installed openflux ($BIN_LABEL) from upstream release"
-            exit 0
-        fi
+log "downloading $URL"
+if http_download "$URL" "$TMP/openflux" 2>/dev/null && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
+    place_binary
+    log "installed openflux-linux-${BIN_LABEL} from $BASE"
+    set_status done "installed openflux-linux-${BIN_LABEL}"
+else
+    # Fallback: scan upstream releases for a matching asset.
+    log "download from $URL failed; scanning ${UPSTREAM_RELEASE_REPO} releases..."
+    set_status running "сканирую upstream-релизы"
+    release_json="$(http_get "${GITHUB_API}/repos/${UPSTREAM_RELEASE_REPO}/releases?per_page=20" 2>/dev/null)" || release_json=""
+    asset_url=""
+    if [ -n "$release_json" ]; then
+        asset_url="$(printf '%s\n' "$release_json" \
+            | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*openflux-linux-'"${BIN_LABEL}"'"' \
+            | head -1 | sed 's/^"browser_download_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+    fi
+    if [ -n "$asset_url" ] && http_download "$asset_url" "$TMP/openflux" 2>/dev/null \
+        && [ -s "$TMP/openflux" ] && is_elf "$TMP/openflux"; then
+        place_binary
+        log "installed openflux-linux-${BIN_LABEL} from upstream release"
+        set_status done "installed from upstream release"
+    else
+        log "ERROR: could not download openflux-linux-${BIN_LABEL}"
+        log "Check the internet connection, or host the binary and set bin_base."
+        set_status failed "could not download openflux-linux-${BIN_LABEL}"
+        exit 1
     fi
 fi
 
-log "ERROR: could not download openflux-linux-${BIN_LABEL}."
-log "Set bin_base to a URL serving openflux-linux-${BIN_LABEL} and try again."
-exit 1
+if [ "${FETCH_RESTART:-0}" = "1" ]; then
+    [ -x /opt/openflux/gen-state.sh ] && /opt/openflux/gen-state.sh >/dev/null 2>&1 || true
+    /etc/init.d/krot-openflux restart >/dev/null 2>&1 || true
+fi
 FETCHSH
     chmod 0755 "$OF_DIR/fetch-binary.sh"
 }
