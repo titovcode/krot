@@ -1,0 +1,12 @@
+.DS_Store
+**/.DS_Store
+
+# Build artifacts and caches
+dist/
+dist-openflux/
+.wsl-build/
+.openwrt-sdk-cache/
+.kilo/
+.sina/
+fe-app-podkop/
+node_modules/

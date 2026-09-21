@@ -948,7 +948,6 @@ ensure_subscription_cache_for_source() {
     local source_section="$2"
     local subscription_url="$3"
     local subscription_user_agent="$4"
-    local fatal_on_error="${5:-0}"
     local source_index="${6:-0}"
     local download_phase="${7:-runtime}"
     local subscription_json_path subscription_url_cache_path subscription_user_agent_cache_path metadata_output_path \
@@ -1027,11 +1026,6 @@ ensure_subscription_cache_for_source() {
         log "Keeping cached subscription for rule '$section' until a fresh download succeeds" "warn"
         subscription_metadata_append_cached_source "$SUBSCRIPTION_SECTION_METADATA_TMP" "$section" "$source_index" "$source_section" || true
         return 0
-    fi
-
-    if [ "$fatal_on_error" -eq 1 ]; then
-        log "Failed to download subscription for rule '$section'. Aborted." "fatal"
-        exit 1
     fi
 
     log "No usable subscription cache for rule '$section'" "warn"
@@ -1571,7 +1565,7 @@ start_sing_box_watchdog() {
     [ "$enabled" -eq 1 ] || return 0
 
     (
-        local fail_count=0
+        fail_count=0
         trap 'rm -f "$PODKOP_WATCHDOG_PID_FILE"; exit 0' EXIT INT TERM
         echo $$ > "$PODKOP_WATCHDOG_PID_FILE"
 
@@ -5006,7 +5000,7 @@ dnsmasq_configure_split_instance() {
         uci_add_list_unique "dhcp" "@dnsmasq[0]" "notinterface" "$interface"
     done
 
-    uci -q delete "dhcp.$PODKOP_DNSMASQ_SECTION"
+    uci -q delete "dhcp.$PODKOP_DNSMASQ_SECTION" || true
     uci set "dhcp.$PODKOP_DNSMASQ_SECTION=dnsmasq"
     uci_set "dhcp" "$PODKOP_DNSMASQ_SECTION" "noresolv" 1
     uci_set "dhcp" "$PODKOP_DNSMASQ_SECTION" "cachesize" 0
@@ -5193,6 +5187,19 @@ seconds_to_due_check_cron_schedule() {
         fi
     fi
 
+    # Fallback for awkward intervals the exact branches above cannot express
+    # (e.g. 5400s). Waking cron up every minute would be wasteful, so pick a
+    # coarse fixed schedule; list_update_if_due still enforces the real interval.
+    if [ "$seconds" -ge 86400 ]; then
+        printf '17 */6 * * *\n'
+        return 0
+    fi
+
+    if [ "$seconds" -gt 3600 ]; then
+        printf '17 */2 * * *\n'
+        return 0
+    fi
+
     printf '* * * * *\n'
 }
 
@@ -5315,8 +5322,11 @@ list_update() {
         fi
     fi
 
-    echo $$ > "$pidfile"
-    trap 'rm -f "$pidfile"' EXIT INT TERM
+    # $$ inside a BusyBox ash background subshell still expands to the parent
+    # service PID, so record the real updater PID via a child's PPID instead.
+    echo "$(sh -c 'echo $PPID' 2> /dev/null)" > "$pidfile"
+    trap 'rm -f "$pidfile"' EXIT
+    trap 'rm -f "$pidfile"; exit 130' INT TERM
 
     local nslookup_timeout=3
     local nslookup_attempts=10
@@ -5324,24 +5334,27 @@ list_update() {
     local curl_attempts=10
     local curl_max_timeout=10
     local delay=3
-    local i
+    local i ok
 
     # DNS Check
+    ok=0
     for i in $(seq 1 $nslookup_attempts); do
         if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
             echolog "DNS check passed"
+            ok=1
             break
         fi
         echolog "DNS is unavailable [$i/$nslookup_attempts]"
         sleep $delay
     done
 
-    if [ "$i" -eq $nslookup_attempts ]; then
+    if [ "$ok" -eq 0 ]; then
         echolog "DNS check failed after $nslookup_attempts attempts"
         return 1
     fi
 
     # Github Check
+    ok=0
     for i in $(seq 1 $curl_attempts); do
         local service_proxy_address
         service_proxy_address="$(get_service_proxy_address)"
@@ -5349,11 +5362,13 @@ list_update() {
         if [ -n "$service_proxy_address" ]; then
             if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
                 echolog "GitHub connection check passed (via proxy)"
+                ok=1
                 break
             fi
         else
             if curl -s -m $curl_timeout https://github.com > /dev/null; then
                 echolog "GitHub connection check passed"
+                ok=1
                 break
             fi
         fi
@@ -5365,7 +5380,7 @@ list_update() {
         sleep $delay
     done
 
-    if [ "$i" -eq $curl_attempts ]; then
+    if [ "$ok" -eq 0 ]; then
         echolog "GitHub connection check failed after $curl_attempts attempts"
         return 1
     fi
@@ -10221,30 +10236,9 @@ check_nft() {
     local found_hetzner=0
     local found_ovh=0
 
-    check_domain_list_contains() {
-        local section="$1"
-
-        config_get_bool domain_list_enabled "$section" "domain_list_enabled" "0"
-        if [ "$domain_list_enabled" -eq 1 ]; then
-            config_list_foreach "$section" "domain_list" check_domain_value
-        fi
-    }
-
-    check_domain_value() {
-        local domain_value="$1"
-
-        if [ "$domain_value" = "hetzner" ]; then
-            found_hetzner=1
-        elif [ "$domain_value" = "ovh" ]; then
-            found_ovh=1
-        fi
-    }
-
-    config_foreach check_domain_list_contains
-
     if [ "$found_hetzner" -eq 1 ] || [ "$found_ovh" -eq 1 ]; then
 
-        local sets="$NFT_COMMON_SET_NAME interfaces $NFT_DISCORD_SET_NAME localv4"
+        local sets="$NFT_COMMON_SET_NAME $NFT_INTERFACE_SET_NAME $NFT_DISCORD_SET_NAME $NFT_LOCALV4_SET_NAME"
 
         nolog "Sets statistics:"
         for set_name in $sets; do
@@ -10926,19 +10920,19 @@ check_dns_available() {
 
     if [ "$dns_type" = "doh" ]; then
         if [ -n "$dig_port" ]; then
-            dig "$dig_host" -p "$dig_port" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
+            dig @"$dig_host" -p "$dig_port" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         else
             dig @"$dig_host" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         fi
     elif [ "$dns_type" = "dot" ]; then
         if [ -n "$dig_port" ]; then
-            dig "$dig_host" -p "$dig_port" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
+            dig @"$dig_host" -p "$dig_port" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         else
             dig @"$dig_host" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         fi
     elif [ "$dns_type" = "udp" ]; then
         if [ -n "$dig_port" ]; then
-            dig "$dig_host" -p "$dig_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
+            dig @"$dig_host" -p "$dig_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         else
             dig @"$dig_host" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
         fi
@@ -10955,7 +10949,7 @@ check_dns_available() {
         bs_host="$(url_get_host "$bootstrap_dns_server")"
         bs_port="$(url_get_port "$bootstrap_dns_server")"
         if [ -n "$bs_port" ]; then
-            dig "$bs_host" -p "$bs_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && bootstrap_dns_status=1
+            dig @"$bs_host" -p "$bs_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && bootstrap_dns_status=1
         else
             dig @"$bs_host" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && bootstrap_dns_status=1
         fi
@@ -12017,7 +12011,7 @@ EOF
 }
 
 case "$1" in
-start)
+start | main)
     start
     ;;
 stop)

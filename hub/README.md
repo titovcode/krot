@@ -49,10 +49,30 @@ Third-party developers can create modules for K.R.O.T. and publish them via GitH
 | `project_url` | Yes | URL to the upstream project |
 | `component` | Yes | Internal component identifier (must be unique) |
 | `repo` | Yes | GitHub `owner/repo` where this module lives |
-| `version` | Yes | Module version string |
+| `version` | Yes | Latest available release version (drives the "Update available" badge) |
 | `install_script` | Yes | Path to install script relative to repo root |
 | `update_script` | No | Path to update script relative to repo root |
 | `remove_script` | No | Path to remove script relative to repo root |
+
+## Version handling (dynamic — no code edits needed)
+
+K.R.O.T. determines module versions automatically:
+
+- **Installed version** is reported from the router itself, in priority order:
+  1. the `VERSION` file your install script writes (e.g. `/opt/olcrtc/VERSION`),
+  2. live detection for the built-in components (package manager or binary
+     `--version` for zapret, byedpi, adguard),
+  3. your `module.json` `version` (last-resort fallback).
+- **Latest available version** comes from `module.json` `version`. Publish a
+  new release, update this single field, and the Hub tab shows
+  "Update available: x.y.z" next to the module until the user updates it.
+
+Recommended: at the end of `install.sh`, write the release you actually
+installed so the Hub always shows the real version:
+
+```sh
+echo "1.2.3" > /opt/your-module/VERSION
+```
 
 ## install.sh
 

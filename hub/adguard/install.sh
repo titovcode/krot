@@ -248,6 +248,11 @@ fi
 
 ROUTER_IP="$(uci get network.lan.ipaddr 2>/dev/null || echo '192.168.1.1')"
 
+# Remember which release was actually installed so K.R.O.T.'s Hub can report
+# the real version (a VERSION file beats parsing --version output).
+ADG_TAG="$(printf '%s\n' "$RELEASE_JSON" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+echo "${ADG_TAG#v}" > /opt/AdGuardHome/VERSION
+
 msg "AdGuard Home installed successfully"
 msg ""
 msg "Web interface: http://${ROUTER_IP}:3000 (configure filters, users, etc.)"

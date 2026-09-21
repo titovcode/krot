@@ -1738,7 +1738,8 @@ updates_install_krot() {
     fi
 
     updates_refresh_luci_after_app_update
-    updates_restart_podkop_after_successful_change
+    # The krot package postinst already starts the service when enabled
+    # sections exist, so no extra restart is needed after package install.
     updates_clear_version_caches
 
     new_version="$(updates_get_installed_package_version "krot")"
@@ -1752,7 +1753,8 @@ component_action() {
     local action="$2"
     local action_arg="$3"
 
-    trap updates_component_action_cleanup EXIT HUP INT TERM
+    trap updates_component_action_cleanup EXIT HUP
+    trap 'updates_component_action_cleanup; exit 130' INT TERM
 
     updates_acquire_component_lock || updates_fail "${component:-unknown}" "${action:-unknown}" "Another component action is already running"
     updates_capture_podkop_running_state
@@ -1813,6 +1815,38 @@ component_action() {
     esac
 }
 
+# Best-effort detection of the version a module actually has on the router.
+# Priority: (1) the VERSION file the installer writes on every install/update,
+# (2) live binary/package metadata, (3) nothing (the caller falls back to the
+# module.json version). Keeps the LuCI Modules tab in sync with reality
+# instead of hard-coded values in updater.sh or the manifests.
+hub_detect_installed_version() {
+    local component="$1"
+    [ -n "$component" ] || return 0
+    case "$component" in
+        zapret)
+            [ -f /opt/zapret/VERSION ] && { head -n 1 /opt/zapret/VERSION 2>/dev/null; return 0; }
+            get_zapret_package_version 2>/dev/null
+            ;;
+        byedpi)
+            [ -f /opt/byedpi/VERSION ] && { head -n 1 /opt/byedpi/VERSION 2>/dev/null; return 0; }
+            get_byedpi_package_version 2>/dev/null
+            ;;
+        adguard)
+            [ -f /opt/AdGuardHome/VERSION ] && { head -n 1 /opt/AdGuardHome/VERSION 2>/dev/null; return 0; }
+            /opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -n 1 \
+                | sed 's/^AdGuard Home, version //; s/^v//'
+            ;;
+        olcrtc)
+            [ -f /opt/olcrtc/VERSION ] && { head -n 1 /opt/olcrtc/VERSION 2>/dev/null; return 0; }
+            ;;
+        openflux)
+            [ -f /opt/openflux/VERSION ] && { head -n 1 /opt/openflux/VERSION 2>/dev/null; return 0; }
+            [ -f /usr/lib/krot-openflux/VERSION ] && head -n 1 /usr/lib/krot-openflux/VERSION 2>/dev/null
+            ;;
+    esac
+}
+
 # Detect installed status of a hub module by its `component` field.
 # Each module must declare `component` in module.json (e.g. "zapret", "byedpi", "adguard").
 # Sets `hub_installed` (true|false) and `hub_installed_version` in the calling scope.
@@ -1831,7 +1865,13 @@ hub_module_installed_status() {
             ;;
         adguard)
             is_adguard_installed || return 1
-            hub_installed_version="$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1 || true)"
+            # Installers write the exact release tag to /opt/AdGuardHome/VERSION;
+            # the live binary output is the fallback for older installs.
+            hub_installed_version="$(head -n 1 /opt/AdGuardHome/VERSION 2>/dev/null || true)"
+            [ -n "$hub_installed_version" ] || \
+                hub_installed_version="$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1 || true)"
+            hub_installed_version="${hub_installed_version#AdGuard Home, version }"
+            hub_installed_version="${hub_installed_version#v}"
             ;;
         olcrtc)
             is_olcrtc_installed || return 1
@@ -1860,9 +1900,11 @@ is_olcrtc_installed() {
     [ -x /etc/init.d/olcrtc ] && [ -x /opt/olcrtc/olcrtc ]
 }
 
-# olcRTC srv has no --version flag; report the module's known version.
+# olcRTC srv has no --version flag; hub/olcrtc/install.sh writes the release
+# tag it actually downloaded to /opt/olcrtc/VERSION, so the installed version
+# is read from that file instead of being hard-coded here.
 get_olcrtc_version() {
-    echo "0.1.0"
+    head -n 1 /opt/olcrtc/VERSION 2>/dev/null || echo "installed"
 }
 
 # Whether the OpenFlux exit-node module is present. The 0.1.x layout kept the
@@ -1890,7 +1932,7 @@ hub_get_modules() {
     local _cache_ts; _cache_ts="$(date +%s)"
     local index_url="https://raw.githubusercontent.com/${hub_repo}/main/hub/index.json?v=${_cache_ts}"
     local tmp_index tmp_module module_ids module_id module_json_url
-    local module_json module_component installed installed_version installed_version_escaped installed_json first=1 result="["
+    local module_json module_component installed installed_version installed_version_escaped installed_json module_manifest_version latest_version_escaped first=1 result="["
 
     updates_init_tmp_dir || { echo "[]"; return 1; }
     tmp_index="$UPDATES_TMP_DIR/hub-index.json"
@@ -1914,6 +1956,11 @@ hub_get_modules() {
             module_id="${module_id% }"
         done
         [ -z "$module_id" ] && continue
+        # module_id goes into URLs and temp file names — reject anything but
+        # the documented id charset ([A-Za-z0-9_-]) coming from index.json.
+        case "$module_id" in
+            *[!A-Za-z0-9_-]*) continue ;;
+        esac
 
         tmp_module="$UPDATES_TMP_DIR/hub-${module_id}.json"
         module_json_url="https://raw.githubusercontent.com/${hub_repo}/main/hub/${module_id}/module.json?v=${_cache_ts}"
@@ -1921,9 +1968,16 @@ hub_get_modules() {
         updates_http_get "$module_json_url" > "$tmp_module" 2>/dev/null
 
         if [ -s "$tmp_module" ]; then
+            # Reject invalid module.json so a broken upstream manifest does
+            # not corrupt the whole modules response.
+            json_utils_ucode file-json-valid "$tmp_module" >/dev/null 2>&1 || continue
             [ "$first" -eq 0 ] && result="${result},"
-            # Compact JSON: remove newlines and extra whitespace
-            module_json="$(tr -d '\n\r' < "$tmp_module" | sed 's/  */ /g')"
+            # Compact JSON: strip newlines and tabs. Do NOT collapse spaces:
+            # sed 's/  */ /g' corrupted double spaces inside string values.
+            module_json="$(tr -d '\n\r\t' < "$tmp_module")"
+            # Manifest version = what upstream currently offers (latest_version
+            # for the UI update badge). Installed state is detected separately.
+            module_manifest_version="$(printf '%s' "$module_json" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/"$//')"
             # Determine installed status for this module via its declared `component`.
             module_component="$(printf '%s' "$module_json" | sed -n 's/.*"component"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
             if hub_module_installed_status "$module_component"; then
@@ -1933,6 +1987,11 @@ hub_get_modules() {
                 installed_json=",\"installed\":true,\"installed_version\":\"${installed_version_escaped}\""
             else
                 installed_json=",\"installed\":false,\"installed_version\":\"\""
+            fi
+            if [ -n "$module_manifest_version" ]; then
+                latest_version_escaped="${module_manifest_version//\\/\\\\}"
+                latest_version_escaped="${latest_version_escaped//\"/\\\"}"
+                installed_json="${installed_json},\"latest_version\":\"${latest_version_escaped}\""
             fi
 
             # Resolve web_url template ({{router_ip}} -> actual LAN IP) so the
@@ -1980,11 +2039,14 @@ hub_get_modules() {
             while [ "${stripped# }" != "$stripped" ]; do
                 stripped="${stripped# }"
             done
-            if [ "${stripped: -1}" = "}" ]; then
-                body="${stripped%\}}"
-            else
-                body="$stripped"
-            fi
+            case "$stripped" in
+                *"}")
+                    body="${stripped%\}}"
+                    ;;
+                *)
+                    body="$stripped"
+                    ;;
+            esac
             module_json="${body}${installed_json}}"
             result="${result}${module_json}"
             first=0
@@ -2072,6 +2134,14 @@ hub_add_source() {
     # Register each module as a UCI section
     local count=0
     for module_id in $modules; do
+        # module_id becomes a UCI section name (hub_source_${module_id}) —
+        # reject anything but the documented id charset ([A-Za-z0-9_-]).
+        case "$module_id" in
+            "" | *[!A-Za-z0-9_-]*)
+                updates_log "Skipping invalid module id from source: ${module_id}" "debug"
+                continue
+                ;;
+        esac
         local section="hub_source_${module_id}"
         uci -q delete "krot.${section}" 2>/dev/null || true
         uci -q set "krot.${section}=hub_source" 2>/dev/null
@@ -2209,9 +2279,24 @@ hub_install_module() {
         updates_fail "hub" "hub_install_${module_id}" "Install script for ${module_id} failed (exit code ${script_rc})"
     fi
 
-    # Extract version from module.json if available
-    local installed_version=""
+    # Report the version actually present on the router after the install
+    # script ran (it may have picked a newer release than the manifest), not
+    # the static module.json value. VERSION-file / live detection first,
+    # manifest version only as a last-resort fallback.
+    local installed_version="" detected_version="" module_component=""
     if [ -s "$tmp_module_json" ]; then
+        module_component="$(grep -o '"component"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"component"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+    fi
+    if [ -n "$module_component" ]; then
+        detected_version="$(hub_detect_installed_version "$module_component" 2>/dev/null || true)"
+        if [ -z "$detected_version" ] && hub_module_installed_status "$module_component" >/dev/null 2>&1; then
+            detected_version="$hub_installed_version"
+        fi
+        if [ -n "$detected_version" ]; then
+            installed_version="$detected_version"
+        fi
+    fi
+    if [ -z "$installed_version" ] && [ -s "$tmp_module_json" ]; then
         installed_version="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/"$//')"
     fi
 

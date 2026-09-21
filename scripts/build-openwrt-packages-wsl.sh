@@ -41,8 +41,8 @@ APP_DESCRIPTION="Rule-based Podkop Plus LuCI app with hybrid sing-box + zapret o
 I18N_DESCRIPTION="Translation for luci-app-krot - Русский (Russian)"
 MAINTAINER="ushan0v <ushan0v@users.noreply.github.com>"
 PROJECT_URL="https://github.com/titovcode/krot"
-BACKEND_DEPENDS_IPK="libc, sing-box, curl, ucode, ucode-mod-fs, kmod-nft-tproxy, coreutils-base64, coreutils-sort, bind-dig, nftables, kmod-nft-nat, kmod-nft-offload, kmod-tcp-bbr"
-BACKEND_DEPENDS_APK="bind-dig coreutils-base64 coreutils-sort curl ucode ucode-mod-fs kmod-nft-nat kmod-nft-offload kmod-nft-tproxy kmod-tcp-bbr libc nftables sing-box"
+BACKEND_DEPENDS_IPK="libc, sing-box, curl, ucode, ucode-mod-fs, kmod-nft-tproxy, coreutils-base64, coreutils-sort, bind-dig, nftables, kmod-nft-nat, kmod-nft-offload, kmod-tcp-bbr, jsonfilter"
+BACKEND_DEPENDS_APK="bind-dig coreutils-base64 coreutils-sort curl jsonfilter kmod-nft-nat kmod-nft-offload kmod-nft-tproxy kmod-tcp-bbr libc nftables sing-box ucode ucode-mod-fs"
 APP_DEPENDS_IPK="libc, luci-base, krot"
 APP_DEPENDS_APK="libc luci-base krot"
 
@@ -399,9 +399,12 @@ EOF
   cat > "$control_dir/prerm" <<'EOF'
 #!/bin/sh
 
-grep -q "105 podkopplus" /etc/iproute2/rt_tables && sed -i "/105 podkopplus/d" /etc/iproute2/rt_tables
-
+# Stop the service BEFORE removing the rt_tables entry: stop_main deletes
+# ip rules/routes by table NAME ("krot"), which must still resolve here.
 /etc/init.d/krot stop >/dev/null 2>&1 || true
+
+grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /etc/iproute2/rt_tables 2>/dev/null || true
+
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
 if [ -r /usr/lib/krot/dnsmasq_failsafe_restore.sh ]; then
 	sh /usr/lib/krot/dnsmasq_failsafe_restore.sh >/dev/null 2>&1 || true
@@ -594,8 +597,10 @@ EOF
 
   cat > "$scripts_dir/backend-pre-deinstall.sh" <<'EOF'
 #!/bin/sh
-grep -q "105 podkopplus" /etc/iproute2/rt_tables && sed -i "/105 podkopplus/d" /etc/iproute2/rt_tables
+# Stop the service BEFORE removing the rt_tables entry: stop_main deletes
+# ip rules/routes by table NAME ("krot"), which must still resolve here.
 /etc/init.d/krot stop >/dev/null 2>&1 || true
+grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /etc/iproute2/rt_tables 2>/dev/null || true
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
 if [ -r /usr/lib/krot/dnsmasq_failsafe_restore.sh ]; then
 	sh /usr/lib/krot/dnsmasq_failsafe_restore.sh >/dev/null 2>&1 || true

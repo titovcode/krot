@@ -1,15 +1,19 @@
+# POSIX ERE patterns for the validators below (BusyBox ash has no [[ ]] and =~, so grep is used)
+RE_IPV4='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'
+RE_IPV4_CIDR='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$'
+RE_DOMAIN='^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$'
+RE_SHADOWSOCKS_USERINFO='^[^:]+:[^:]+(:[^:]+)?$'
+
 # Check if string is valid IPv4
 is_ipv4() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1[0-9]|[1-9])?[0-9])\.){3}(25[0-5]|(2[0-4]|1[0-9]|[1-9])?[0-9])$"
-    [[ "$ip" =~ $regex ]]
+    printf '%s' "$ip" | grep -Eq "$RE_IPV4"
 }
 
 # Check if string is valid IPv4 with CIDR mask
 is_ipv4_cidr() {
     local ip="$1"
-    local regex="^((25[0-5]|(2[0-4]|1[0-9]|[1-9])?[0-9])\.){3}(25[0-5]|(2[0-4]|1[0-9]|[1-9])?[0-9])(/(3[0-2]|[12]?[0-9]))$"
-    [[ "$ip" =~ $regex ]]
+    printf '%s' "$ip" | grep -Eq "$RE_IPV4_CIDR"
 }
 
 is_ipv4_ip_or_ipv4_cidr() {
@@ -18,9 +22,7 @@ is_ipv4_ip_or_ipv4_cidr() {
 
 is_domain() {
     local str="$1"
-    local regex='^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$'
-
-    [[ "$str" =~ $regex ]]
+    printf '%s' "$str" | grep -Eq "$RE_DOMAIN"
 }
 
 is_domain_suffix() {
@@ -33,9 +35,7 @@ is_domain_suffix() {
 # Checks if the given string looks like a Shadowsocks userinfo
 is_shadowsocks_userinfo_format() {
     local str="$1"
-    local regex='^[^:]+:[^:]+(:[^:]+)?$'
-
-    [[ "$str" =~ $regex ]]
+    printf '%s' "$str" | grep -Eq "$RE_SHADOWSOCKS_USERINFO"
 }
 
 # Compares the current package version with the required minimum
@@ -88,7 +88,7 @@ get_apk_installed_package_version() {
 file_exists() {
     local filepath="$1"
 
-    if [[ -f "$filepath" ]]; then
+    if [ -f "$filepath" ]; then
         return 0
     else
         return 1
@@ -317,7 +317,10 @@ url_get_port() {
     url="${url#*@}"
     url="${url%%[/?#]*}"
 
-    [[ "$url" == *:* ]] && echo "${url#*:}" || echo ""
+    case "$url" in
+    *:*) echo "${url#*:}" ;;
+    *) echo "" ;;
+    esac
 }
 
 # Extracts the path from a URL (without query or fragment; returns "/" if empty)
@@ -368,9 +371,9 @@ base64_decode() {
     echo "$decoded_url"
 }
 
-# Generates a unique 16-character ID based on the current timestamp and a random number
+# Generates a unique 16-character ID based on the current timestamp, the shell PID and random bytes
 gen_id() {
-    printf '%s%s' "$(date +%s)" "$RANDOM" | md5sum | cut -c1-16
+    { printf '%s_%s' "$(date +%s)" "$$"; head -c 8 /dev/urandom 2>/dev/null; } | md5sum | cut -c1-16
 }
 
 # Download URL to file
@@ -495,7 +498,7 @@ download_subscription() {
             ;;
         esac
     fi
-    if printf '%s' "$user_agent" | grep -qE '[[:cntrl:]]|"|\\|'; then
+    if printf '%s' "$user_agent" | grep -q '[[:cntrl:]]' || printf '%s' "$user_agent" | grep -q '["\]'; then
         log "Invalid subscription User-Agent contains forbidden characters" "error"
         return 1
     fi

@@ -30,6 +30,19 @@ function write_json(path, value) {
     return write_file(path, sprintf("%J", value) + "\n");
 }
 
+function write_json_atomic(path, value) {
+    let stamp = clock();
+    let tmp_path = sprintf("%s.%d.%d.tmp", path, stamp[0], stamp[1]);
+
+    if (!write_json(tmp_path, value))
+        return false;
+    if (!fs.rename(tmp_path, path)) {
+        fs.unlink(tmp_path);
+        return false;
+    }
+    return true;
+}
+
 function write_stdout_json(value) {
     print(sprintf("%J", value), "\n");
 }
@@ -206,7 +219,8 @@ function append_metadata_file(array_path, metadata_path, source_index, source_se
 
     if (valid_metadata_object(metadata)) {
         push(array, attach_source_metadata(metadata, source_index, source_section));
-        write_json(array_path, array);
+        if (!write_json_atomic(array_path, array))
+            exit(1);
     }
 }
 

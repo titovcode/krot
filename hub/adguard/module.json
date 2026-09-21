@@ -8,7 +8,7 @@
   "web_url": "http://{{router_ip}}:3000",
   "component": "adguard",
   "repo": "titovcode/krot",
-  "version": "1.0.0",
+  "version": "0.107.79",
   "install_script": "hub/adguard/install.sh",
   "remove_script": "hub/adguard/remove.sh"
 }

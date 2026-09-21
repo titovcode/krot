@@ -108,6 +108,12 @@ else
     cp "$TMP_DIR/olcrtc" "$OLC_BIN" && chmod 0755 "$OLC_BIN"
 fi
 
+# Remember which release tag was actually installed so K.R.O.T.'s Hub can
+# report the real version (get_olcrtc_version reads this file) instead of a
+# hard-coded one in updater.sh.
+OLCRTC_TAG="${OLCRTC_TAG:-olcrtc-0.1.0}"
+echo "$OLCRTC_TAG" | sed 's/^olcrtc-//' > "$OLC_DIR/VERSION"
+
 mkdir -p "$OLC_DATA_DIR"
 
 # ── 2. Config (only on first install; existing config is preserved) ──────

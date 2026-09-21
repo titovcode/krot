@@ -7,6 +7,6 @@
   "project_url": "https://github.com/bol-van/zapret",
   "component": "zapret",
   "repo": "titovcode/krot",
-  "version": "1.0.0",
+  "version": "72.20260307",
   "install_script": "hub/zapret/install.sh"
 }

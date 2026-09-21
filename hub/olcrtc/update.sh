@@ -53,6 +53,9 @@ http_download "$DOWNLOAD_URL" "$TMP_DIR/olcrtc" || fail "Failed to download olcr
 [ -s "$TMP_DIR/olcrtc" ] || fail "Downloaded binary is empty"
 mkdir -p /opt/olcrtc
 cp "$TMP_DIR/olcrtc" /opt/olcrtc/olcrtc && chmod 0755 /opt/olcrtc/olcrtc
+# Record the installed release so K.R.O.T.'s Hub reports the real version.
+OLCRTC_TAG="${OLCRTC_TAG:-olcrtc-0.1.0}"
+echo "$OLCRTC_TAG" | sed 's/^olcrtc-//' > /opt/olcrtc/VERSION
 
 msg "Updating QR renderer..."
 http_download "https://raw.githubusercontent.com/${REPO}/${BRANCH}/hub/olcrtc/qrcode.js" \

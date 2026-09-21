@@ -451,12 +451,14 @@ run_nfqws_dry_run_validation() {
     IFS=' '
     set -- $raw_opt
     IFS="$old_ifs"
+    # Restore glob immediately after the split; the nfqws invocation below
+    # uses "$@" so noglob is no longer needed.
+    set +f
 
     "$ZAPRET_NFQWS_BIN" --dry-run --qnum="$ZAPRET_QUEUE_BASE" --dpi-desync-fwmark="$ZAPRET_DESYNC_MARK" "$@" >"$output_file" 2>&1
     rc=$?
     output="$(cat "$output_file")"
     rm -f "$output_file"
-    set +f
 
     [ "$rc" -eq 0 ] && return 0
 
@@ -488,6 +490,9 @@ check_nfqws_strategy() {
     IFS=' '
     set -- $raw_opt
     IFS="$old_ifs"
+    # noglob is only needed for the word split above; restore it immediately
+    # so the early `return 1` validation paths below cannot leave it disabled.
+    set +f
 
     while [ "$#" -gt 0 ]; do
         token="$1"
@@ -575,8 +580,6 @@ check_nfqws_strategy() {
             ;;
         esac
     done
-
-    set +f
 
     run_nfqws_dry_run_validation "$raw_opt"
 }
