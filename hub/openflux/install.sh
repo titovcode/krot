@@ -233,6 +233,15 @@ config settings 'settings'
 #	option encryption_key ''            # optional shared secret (AES-256-GCM)
 #	option local_ip ''                  # egress IP for l3 SNAT/RST filter (empty = auto)
 #	option debug '0'
+#
+# Performance tuning (optional, defaults shown):
+#	option batch_bytes '65536'        # max bytes per batched message
+#	option batch_count '256'          # max packets per batch
+#	option batch_linger_ms '1'        # ms to wait for batch fill
+#	option volga_workers '4000'       # vyandex: HTTP workers
+#	option volga_batch_size '50'      # vyandex: packets per HTTP POST
+#	option volga_batch_timeout '1'    # vyandex: ms to wait for batch
+#	option volga_batch_bytes '8388608' # vyandex: max bytes per POST (8MB)
 EOF
     chmod 0600 "$OF_CONFIG"
 }

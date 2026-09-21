@@ -49,6 +49,42 @@ Upstream-проект: <https://github.com/p1neappleXpress/OpenFlux>
 - На Android отключите Private DNS: OpenFlux пропускает только TCP, UDP/53 и
   DoT не маскируются.
 
+## Оптимизация скорости
+
+Для максимальной производительности используйте транспорт **vyandex** (HTTP relay + WS)
+вместо yandex (WebSocket). Рекомендуемые настройки инстанса:
+
+| Параметр | По умолчанию | Быстрый режим | Описание |
+|----------|--------------|---------------|----------|
+| `transport` | `yandex` | `vyandex` | vyandex быстрее (HTTP POST + WS) |
+| `exit_mode` | `l3` | `l3` | l3 быстрее l4 (нет двойной терминации) |
+| `codec` | `batched` | `batched` | batched (zstd) эффективнее legacy (LZ4) |
+| `batch_bytes` | 65536 | 65536–131072 | Больше = выше throughput, больше задержка |
+| `batch_count` | 256 | 256–512 | Пакетов в одном сообщении |
+| `batch_linger_ms` | 1 | 1–2 | Меньше = ниже задержка, больше сообщений |
+| `volga_workers` | 4000 | 4000–8000 | Параллельные HTTP-запросы (vyandex) |
+| `volga_batch_size` | 50 | 50–100 | Пакетов на один HTTP POST (vyandex) |
+| `volga_batch_timeout` | 1 | 1–2 | Мс ожидания заполнения батча (vyandex) |
+
+Пример «быстрого» инстанса:
+
+```
+config instance 'phone_fast'
+	option enabled '1'
+	option label 'Fast phone'
+	option transport 'vyandex'
+	option exit_mode 'l3'
+	option codec 'batched'
+	option url 'https://disk.yandex.ru/i/...'
+	option batch_bytes '131072'
+	option batch_count '512'
+	option volga_workers '8000'
+	option volga_batch_size '100'
+```
+
+**Важно:** на роутере с малым RAM (128–256 MB) не ставьте `volga_workers` выше 4000 —
+каждый воркер держит буферы. Следите за `logread` на предмет OOM.
+
 ## Диагностика
 
 - `logread -e krot-openflux` (сервис), `logread -e openflux` (сам openflux)

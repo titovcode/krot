@@ -45,6 +45,15 @@ config_get debug "$SECTION" "debug" "0"
 config_get suppress_rst "settings" "suppress_rst" "1"
 config_get use_iptables "settings" "use_iptables" "0"
 
+# Performance tuning via UCI (optional, see README)
+config_get batch_bytes "$SECTION" "batch_bytes" "65536"
+config_get batch_count "$SECTION" "batch_count" "256"
+config_get batch_linger_ms "$SECTION" "batch_linger_ms" "1"
+config_get volga_workers "$SECTION" "volga_workers" "4000"
+config_get volga_batch_size "$SECTION" "volga_batch_size" "50"
+config_get volga_batch_timeout "$SECTION" "volga_batch_timeout" "1"
+config_get volga_batch_bytes "$SECTION" "volga_batch_bytes" "8388608"
+
 log() { logger -t "krot-openflux[$SECTION]" -- "$*"; echo "krot-openflux[$SECTION]: $*"; }
 
 if [ ! -x "$BIN" ]; then
@@ -196,7 +205,16 @@ if [ "$exit_mode" = "l4" ]; then
     set -- "$@" --socks5 "127.0.0.1:${listen_port}"
 fi
 
-log "starting openflux ($transport, $exit_mode)"
+log "starting openflux ($transport, $exit_mode, batch=${batch_bytes}B/${batch_count}pkt/${batch_linger_ms}ms)"
+
+# Export performance tuning env vars for the binary
+export OPENFLUX_BATCH_BYTES="$batch_bytes"
+export OPENFLUX_BATCH_COUNT="$batch_count"
+export OPENFLUX_BATCH_LINGER_MS="$batch_linger_ms"
+export OPENFLUX_VOLGA_WORKERS="$volga_workers"
+export OPENFLUX_VOLGA_BATCH_SIZE="$volga_batch_size"
+export OPENFLUX_VOLGA_BATCH_TIMEOUT_MS="$volga_batch_timeout"
+export OPENFLUX_VOLGA_BATCH_BYTES="$volga_batch_bytes"
 
 # Capture the binary's own stdout/stderr — procd would otherwise send it to
 # /dev/null, hiding the crash reason in a respawn loop. Append so a respawn
@@ -204,5 +222,6 @@ log "starting openflux ($transport, $exit_mode)"
 LOG_FILE="/tmp/openflux-${SECTION}.log"
 {
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') starting: $* ==="
+    echo "=== env: OPENFLUX_BATCH_BYTES=$batch_bytes OPENFLUX_BATCH_COUNT=$batch_count OPENFLUX_BATCH_LINGER_MS=$batch_linger_ms ==="
     exec "$BIN" "$@"
 } >>"$LOG_FILE" 2>&1
