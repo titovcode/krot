@@ -160,6 +160,60 @@ if [ "$exit_mode" = "l3" ] && [ "$suppress_rst" = "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# K.R.O.T. traffic rules integration
+# ---------------------------------------------------------------------------
+# OpenFlux traffic must bypass K.R.O.T.'s sing-box proxy (it IS the tunnel).
+# We add a mark exemption so packets from/to the OpenFlux process don't get
+# redirected to sing-box's tproxy.
+
+krot_bypass_install() {
+    if ! command -v nft >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Check if KrotTable exists (K.R.O.T. is active)
+    if ! nft list table inet KrotTable >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # Create a chain in KrotTable for OpenFlux bypass if it doesn't exist
+    if ! nft list chain inet KrotTable openflux_bypass >/dev/null 2>&1; then
+        nft add chain inet KrotTable openflux_bypass '{ type filter hook output priority mangle - 5; policy accept; }' 2>/dev/null || true
+    fi
+
+    # Get the PID of the openflux process for this instance
+    local pid=""
+    if [ -n "$SECTION" ]; then
+        pid="$(pgrep -f "openflux.*${SECTION}" 2>/dev/null | head -1)"
+    fi
+    [ -z "$pid" ] && pid="$(pgrep -f 'openflux.*role=exit' 2>/dev/null | head -1)"
+
+    # Add rule to skip K.R.O.T. marking for openflux process
+    # We mark packets with 0x00200000 (K.R.O.T.'s "already proxied" mark)
+    # so they bypass the sing-box tproxy redirect
+    if ! nft list chain inet KrotTable openflux_bypass 2>/dev/null | grep -q 'meta mark set 0x00200000'; then
+        nft add rule inet KrotTable openflux_bypass meta mark set 0x00200000 counter 2>/dev/null || true
+    fi
+
+    # Also ensure openflux's own transport connections (Yandex, etc.) bypass
+    # by marking them before K.R.O.T.'s mangle rules
+    if ! nft list chain inet KrotTable mangle_output 2>/dev/null | grep -q 'skuid.*0x00200000'; then
+        # Insert at the beginning: mark all traffic from openflux user (root)
+        # This is a broad rule but ensures the tunnel itself doesn't get proxied
+        nft insert rule inet KrotTable mangle_output meta skuid 0 meta mark set 0x00200000 counter 2>/dev/null || true
+    fi
+}
+
+krot_bypass_remove() {
+    if command -v nft >/dev/null 2>&1; then
+        nft delete chain inet KrotTable openflux_bypass 2>/dev/null || true
+    fi
+}
+
+# Install bypass before starting
+krot_bypass_install
+
+# ---------------------------------------------------------------------------
 # Compose the command line
 # ---------------------------------------------------------------------------
 
@@ -215,6 +269,9 @@ export OPENFLUX_VOLGA_WORKERS="$volga_workers"
 export OPENFLUX_VOLGA_BATCH_SIZE="$volga_batch_size"
 export OPENFLUX_VOLGA_BATCH_TIMEOUT_MS="$volga_batch_timeout"
 export OPENFLUX_VOLGA_BATCH_BYTES="$volga_batch_bytes"
+
+# Cleanup K.R.O.T. bypass on exit
+trap krot_bypass_remove EXIT HUP INT TERM
 
 # Capture the binary's own stdout/stderr — procd would otherwise send it to
 # /dev/null, hiding the crash reason in a respawn loop. Append so a respawn

@@ -49,6 +49,24 @@ Upstream-проект: <https://github.com/p1neappleXpress/OpenFlux>
 - На Android отключите Private DNS: OpenFlux пропускает только TCP, UDP/53 и
   DoT не маскируются.
 
+## Интеграция с K.R.O.T.
+
+OpenFlux автоматически обходит правила K.R.O.T. (sing-box), чтобы трафик туннеля
+не попадал в прокси. Это работает через nftables:
+
+1. **Метка 0x00200000** — пакеты OpenFlux помечаются как "уже обработанные"
+2. **Цепочка openflux_bypass** — в `KrotTable` пропускает трафик без tproxy
+3. **mangle_output** — вставляет правило для root-процесса OpenFlux
+
+Проверка:
+```
+nft list chain inet KrotTable openflux_bypass
+nft list chain inet KrotTable mangle_output | grep skuid
+```
+
+**Важно:** если K.R.O.T. перезапустится, OpenFlux пересоздаст свои правила
+при следующем рестарте инстанса.
+
 ## Оптимизация скорости
 
 Для максимальной производительности используйте транспорт **vyandex** (HTTP relay + WS)
@@ -91,6 +109,7 @@ config instance 'phone_fast'
 - `/etc/init.d/krot-openflux status`
 - Панель: http://<router-ip>/openflux/ (автообновление каждые 5с)
 - RST-фильтр: `nft list table ip krot_openflux` (или `iptables -nL KROT_OPENFLUX`)
+- K.R.O.T. bypass: `nft list chain inet KrotTable openflux_bypass`
 
 ## Локальное тестирование без пуша
 
