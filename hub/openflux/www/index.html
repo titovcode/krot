@@ -112,7 +112,10 @@
       <h1>OpenFlux Exit Node</h1>
       <p class="sub">Выходная нода OpenFlux. Телефон с <b>OpenFluxAndroid</b> туннелирует трафик через выбранный транспорт на этот роутер.</p>
     </div>
-    <span id="svc-status" class="badge warn">Загрузка…</span>
+    <div style="text-align:right">
+      <span id="svc-status" class="badge warn">Загрузка…</span>
+      <div id="arch-line" class="hint" style="margin-top:6px"></div>
+    </div>
   </div>
 
   <div class="card">
@@ -209,14 +212,14 @@
   <button id="btn-add">+ Добавить инстанс</button>
 
   <h2>Настройки</h2>
-  <details class="card">
+  <details class="card" open>
     <summary>Подключение и брандмауэр</summary>
     <div class="card-body">
       <div class="row">
         <label>bin_base</label>
-        <input type="text" id="set-bin_base" placeholder="https://github.com/.../releases/download/...">
+        <input type="text" id="set-bin_base" placeholder="https://github.com/titovcode/krot/releases/download/openflux-0.1.0/">
       </div>
-      <p class="hint">URL с бинарниками <code>openflux-linux-&lt;arch&gt;</code>. Пусто — закреплённый релиз модуля.</p>
+      <p class="hint">Пусто = закреплённый релиз <code>titovcode/krot</code>, тег <code>openflux-0.1.0</code> (архитектура подставляется автоматически: <code>openflux-linux-&lt;arch&gt;</code>). Кнопка «Скачать бинарник» сверху использует этот же адрес.</p>
       <div class="row">
         <label>Подавление RST</label>
         <select id="set-suppress_rst">
@@ -320,6 +323,11 @@
     } else {
       statusEl.textContent = 'Остановлен';
       statusEl.className = 'badge warn';
+    }
+
+    var archEl = document.getElementById('arch-line');
+    if (archEl) {
+      archEl.textContent = state.arch ? ('arch: ' + state.arch) : '';
     }
 
     if (document.activeElement !== document.getElementById('set-bin_base')) {
@@ -521,6 +529,16 @@
   };
 
   load();
+
+  // Auto-refresh every 5s while no form is open and no field is focused,
+  // so the status/arch line and instance states stay live without
+  // clobbering user edits.
+  setInterval(function () {
+    if (!document.getElementById('form-card').classList.contains('hidden')) return;
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.tagName === 'TEXTAREA')) return;
+    load();
+  }, 5000);
 })();
 </script>
 </body>
