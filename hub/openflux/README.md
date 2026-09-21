@@ -72,19 +72,27 @@ nft list chain inet KrotTable mangle_output | grep skuid
 Для максимальной производительности используйте транспорт **vyandex** (HTTP relay + WS)
 вместо yandex (WebSocket). Рекомендуемые настройки инстанса:
 
-| Параметр | По умолчанию | Быстрый режим | Описание |
-|----------|--------------|---------------|----------|
-| `transport` | `yandex` | `vyandex` | vyandex быстрее (HTTP POST + WS) |
-| `exit_mode` | `l3` | `l3` | l3 быстрее l4 (нет двойной терминации) |
-| `codec` | `batched` | `batched` | batched (zstd) эффективнее legacy (LZ4) |
-| `batch_bytes` | 65536 | 65536–131072 | Больше = выше throughput, больше задержка |
-| `batch_count` | 256 | 256–512 | Пакетов в одном сообщении |
-| `batch_linger_ms` | 1 | 1–2 | Меньше = ниже задержка, больше сообщений |
-| `volga_workers` | 4000 | 4000–8000 | Параллельные HTTP-запросы (vyandex) |
-| `volga_batch_size` | 50 | 50–100 | Пакетов на один HTTP POST (vyandex) |
-| `volga_batch_timeout` | 1 | 1–2 | Мс ожидания заполнения батча (vyandex) |
+| Параметр | По умолчанию | Описание |
+|----------|--------------|----------|
+| `transport` | `yandex` | vyandex быстрее (HTTP POST + WS) |
+| `exit_mode` | `l3` | l3 быстрее l4 (нет двойной терминации) |
+| `codec` | `batched` | batched (zstd) эффективнее legacy (LZ4) |
+| `batch_bytes` | 8192 | Макс. байт на одно WS-сообщение |
+| `batch_count` | 64 | Пакетов в одном сообщении |
+| `batch_linger_ms` | 5 | Мс ожидания заполнения батча |
+| `volga_workers` | 4000 | Параллельные HTTP-запросы (vyandex) |
+| `volga_batch_size` | 50 | Пакетов на один HTTP POST (vyandex) |
+| `volga_batch_timeout` | 1 | Мс ожидания заполнения батча (vyandex) |
 
-Пример «быстрого» инстанса:
+**Важно про батчи:** значения `batch_bytes`/`batch_count`/`batch_linger_ms`
+по умолчанию совпадают с upstream-константами OpenFlux (8192 / 64 / 5ms).
+Большие батчи (64 KiB+, сотни пакетов, linger 1 мс) гонят в канал Яндекс
+Документов крупные WS-фреймы с высокой частотой — Яндекс в ответ рвёт
+WebSocket с `close 1005` каждые ~60 секунд (цикл «подключает-отключает»
+на телефоне). Не поднимайте их без необходимости; агрессивный батчинг
+уместен только для vyandex, который шлёт данные обычными HTTP POST.
+
+Пример «быстрого» инстанса (только vyandex):
 
 ```
 config instance 'phone_fast'
@@ -94,8 +102,6 @@ config instance 'phone_fast'
 	option exit_mode 'l3'
 	option codec 'batched'
 	option url 'https://disk.yandex.ru/i/...'
-	option batch_bytes '131072'
-	option batch_count '512'
 	option volga_workers '8000'
 	option volga_batch_size '100'
 ```

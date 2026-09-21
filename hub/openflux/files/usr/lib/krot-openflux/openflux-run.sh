@@ -46,9 +46,14 @@ config_get suppress_rst "settings" "suppress_rst" "1"
 config_get use_iptables "settings" "use_iptables" "0"
 
 # Performance tuning via UCI (optional, see README)
-config_get batch_bytes "$SECTION" "batch_bytes" "65536"
-config_get batch_count "$SECTION" "batch_count" "256"
-config_get batch_linger_ms "$SECTION" "batch_linger_ms" "1"
+# Batching defaults follow upstream's constants (transport/batched.go:
+# 8192B / 64 packets / 5ms linger). Aggressive batches (e.g. 64 KiB / 256
+# packets / 1ms) push large WS frames into the doc-collab channel at a high
+# rate; Yandex responds by dropping the WebSocket with close 1005 every
+# ~60s. Keep the upstream profile unless the channel is known to allow it.
+config_get batch_bytes "$SECTION" "batch_bytes" "8192"
+config_get batch_count "$SECTION" "batch_count" "64"
+config_get batch_linger_ms "$SECTION" "batch_linger_ms" "5"
 config_get volga_workers "$SECTION" "volga_workers" "4000"
 config_get volga_batch_size "$SECTION" "volga_batch_size" "50"
 config_get volga_batch_timeout "$SECTION" "volga_batch_timeout" "1"
