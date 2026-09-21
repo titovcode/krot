@@ -192,8 +192,10 @@
       <p class="hint" style="margin:0 0 4px 120px">Кодек должен совпадать с выбранным в OpenFluxAndroid. Ошибка <code>unknown batch version 0x00</code> в логе инстанса = клиент шлёт другой формат (см. «Помощь»).</p>
       <div class="form-row">
         <label>Ключ шифрования</label>
-        <input type="text" id="f-encryption_key" placeholder="опционально, AES-256-GCM">
+        <input type="text" id="f-encryption_key" placeholder="пусто = без шифрования">
+        <button type="button" class="ghost" id="btn-gen-key" title="Сгенерировать случайный ключ (32 hex-символа)">Сгенерировать</button>
       </div>
+      <p class="hint" id="enc-key-hint" style="margin:0 0 4px 120px">Опционально: AES-256-GCM, общий секрет для обеих сторон. Если задан — должен быть <b>не короче 16 символов</b> и совпадать с ключом в OpenFluxAndroid. Не нужен — оставьте пустым, тогда поле не должно блокировать сохранение.</p>
       <div class="form-row">
         <label>Egress IP</label>
         <input type="text" id="f-local_ip" placeholder="пусто = авто (только l3)">
@@ -432,15 +434,36 @@
   document.getElementById('btn-add').onclick = function () { showForm(null); };
   document.getElementById('btn-cancel').onclick = hideForm;
 
+  document.getElementById('btn-gen-key').onclick = function () {
+    var bytes = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    var hex = Array.prototype.map.call(bytes, function (b) {
+      return ('0' + b.toString(16)).slice(-2);
+    }).join('');
+    var el = document.getElementById('f-encryption_key');
+    el.value = hex;
+    el.style.borderColor = '';
+    var hintEl = document.getElementById('enc-key-hint');
+    if (hintEl) hintEl.style.color = '';
+    toast('Ключ сгенерирован (32 hex-символа). Вставьте этот же ключ в OpenFluxAndroid.');
+  };
+
   document.getElementById('btn-save-instance').onclick = function () {
     var transport = document.getElementById('f-transport').value;
     var urlField = transport === 'cupsonline' ? 'f-cups-rooms' : 'f-url';
-    var encKey = document.getElementById('f-encryption_key').value;
-    // The binary hard-fails on secrets shorter than 16 chars; catch it here.
+    var encKeyEl = document.getElementById('f-encryption_key');
+    var encKey = encKeyEl.value.trim();
+    // The binary hard-fails on secrets shorter than 16 chars; catch it here
+    // and point at the field so it is obvious what to fix.
     if (encKey && encKey.length < 16) {
-      toast('Ключ шифрования должен быть не короче 16 символов (или оставьте пустым)', true);
+      encKeyEl.style.borderColor = '#e06767';
+      encKeyEl.focus();
+      var hintEl = document.getElementById('enc-key-hint');
+      if (hintEl) hintEl.style.color = '#e06767';
+      toast('Ключ шифрования: сейчас ' + encKey.length + ' символов, нужно минимум 16 — нажмите «Сгенерировать» или оставьте поле пустым', true);
       return;
     }
+    encKeyEl.style.borderColor = '';
     var payload = {
       id: document.getElementById('f-id').value || null,
       label: document.getElementById('f-label').value,
@@ -450,7 +473,7 @@
       max_token: document.getElementById('f-max_token').value,
       max_uid: document.getElementById('f-max_uid').value,
       codec: document.getElementById('f-codec').value,
-      encryption_key: document.getElementById('f-encryption_key').value,
+      encryption_key: encKey,
       local_ip: document.getElementById('f-local_ip').value.trim(),
       listen_port: document.getElementById('f-listen_port').value.trim() || '4545',
       enabled: true

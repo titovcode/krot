@@ -16,7 +16,7 @@
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.4"
+MODULE_VERSION="0.2.5"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
@@ -418,8 +418,18 @@ case "$ACTION" in
         uci -q set "$CONFIG.$ID.max_token=$(json_get "$PAYLOAD" max_token)"
         uci -q set "$CONFIG.$ID.max_uid=$(json_get "$PAYLOAD" max_uid)"
         [ -n "$CODEC" ] && uci -q set "$CONFIG.$ID.codec=$CODEC"
+        ENCKEY="$(json_get "$PAYLOAD" encryption_key)"
+        if [ -n "$ENCKEY" ] && [ "${#ENCKEY}" -lt 16 ]; then
+            emit '{"ok":false,"error":"encryption_key must be at least 16 characters (or empty to disable)"}'
+            exit 0
+        fi
+        # An empty value must clear the stored option, not write an empty one.
+        if [ -n "$ENCKEY" ]; then
+            uci -q set "$CONFIG.$ID.encryption_key=$ENCKEY"
+        else
+            uci -q delete "$CONFIG.$ID.encryption_key" 2>/dev/null || true
+        fi
         uci -q set "$CONFIG.$ID.listen_port=${PORT:-4545}"
-        uci -q set "$CONFIG.$ID.encryption_key=$(json_get "$PAYLOAD" encryption_key)"
         uci -q set "$CONFIG.$ID.local_ip=$(json_get "$PAYLOAD" local_ip)"
         uci -q set "$CONFIG.$ID.enabled=1"
         uci -q commit "$CONFIG"
