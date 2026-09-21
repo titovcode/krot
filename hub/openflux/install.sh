@@ -418,12 +418,9 @@ case "$ACTION" in
         uci -q set "$CONFIG.$ID.max_token=$(json_get "$PAYLOAD" max_token)"
         uci -q set "$CONFIG.$ID.max_uid=$(json_get "$PAYLOAD" max_uid)"
         [ -n "$CODEC" ] && uci -q set "$CONFIG.$ID.codec=$CODEC"
-        ENCKEY="$(json_get "$PAYLOAD" encryption_key)"
-        if [ -n "$ENCKEY" ] && [ "${#ENCKEY}" -lt 16 ]; then
-            emit '{"ok":false,"error":"encryption_key must be at least 16 characters (or empty to disable)"}'
-            exit 0
-        fi
+        # The runner validates the key at start (>=16 chars, clear log error).
         # An empty value must clear the stored option, not write an empty one.
+        ENCKEY="$(json_get "$PAYLOAD" encryption_key)"
         if [ -n "$ENCKEY" ]; then
             uci -q set "$CONFIG.$ID.encryption_key=$ENCKEY"
         else

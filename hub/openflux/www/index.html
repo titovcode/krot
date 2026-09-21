@@ -257,6 +257,14 @@
     </div>
   </details>
 
+  <details class="card" open>
+    <summary>Шифрование не обязательно</summary>
+    <div class="card-body hint">
+      <p>Обычная установка (как в <a href="https://github.com/p1neappleXpress/OpenFlux/issues/44">issue #44</a>) обходится <b>без ключа шифрования</b>: поле «Ключ шифрования» оставьте пустым — туннель работает без AES-256-GCM.</p>
+      <p>Ключ нужен, только если вы хотите шифровать трафик поверх транспорта: тогда нажмите «Сгенерировать» и вставьте <b>тот же ключ</b> в OpenFluxAndroid (требование бинарника: минимум 16 символов). Кодек legacy LZ4 ставится одинаково — с ключом или без.</p>
+    </div>
+  </details>
+
   <details class="card">
     <summary>Телефон не подключается: <code>unknown batch version 0x00</code></summary>
     <div class="card-body hint">
@@ -479,8 +487,19 @@
       enabled: true
     };
     api('save_instance', payload)
-      .then(function () { hideForm(); return load(); })
-      .then(function () { toast('Инстанс сохранён'); })
+      .then(function (r) {
+        if (r && r.ok === false) {
+          // Backend rejected the payload (e.g. bad key length); keep the form open.
+          toast('Не сохранено: ' + (r.error || 'неизвестная ошибка'), true);
+          return null;
+        }
+        return r;
+      })
+      .then(function (r) {
+        if (!r) return null;
+        hideForm();
+        return load().then(function () { toast('Инстанс сохранён'); });
+      })
       .catch(function (e) { toast('Ошибка: ' + e, true); });
   };
 
