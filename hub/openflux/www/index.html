@@ -186,6 +186,7 @@
           <option value="legacy">legacy LZ4</option>
         </select>
       </div>
+      <p class="hint" style="margin:0 0 4px 120px">Кодек должен совпадать с выбранным в OpenFluxAndroid. Ошибка <code>unknown batch version 0x00</code> в логе инстанса = клиент шлёт другой формат (см. «Помощь»).</p>
       <div class="form-row">
         <label>Ключ шифрования</label>
         <input type="text" id="f-encryption_key" placeholder="опционально, AES-256-GCM">
@@ -248,6 +249,19 @@
         <li>Нажмите «Подключить»</li>
       </ol>
       <p style="margin-top:12px">Одна ссылка = одно устройство: для второго телефона создайте вторую ссылку и второй инстанс. Бинарник должен лежать в <code>/opt/openflux/openflux</code>.</p>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Телефон не подключается: <code>unknown batch version 0x00</code></summary>
+    <div class="card-body hint">
+      <p>В <code>/tmp/openflux-&lt;инстанс&gt;.log</code> сыпятся <code>[BATCH] decode error: unknown batch version 0x00</code>, а в статистике <code>fromTr=0</code> — телефон и роутер говорят на разных версиях кодека: свежие сборки используют batched (batch version 0x02), старые клиенты — другой формат.</p>
+      <ol class="steps">
+        <li>Выставьте <b>один и тот же</b> кодек на обоих концах: «Кодек» = <code>legacy LZ4</code> в инстансе здесь и legacy в OpenFluxAndroid — либо обновите приложение до свежего (тогда на обоих концах batched).</li>
+        <li>Проверьте, что URL документа в инстансе и в приложении — <b>одна и та же</b> ссылка.</li>
+        <li>После смены кодека сервис перезапускается сам; повторите подключение.</li>
+      </ol>
+      <p style="margin-top:12px">Проверка результата: в логе инстанса должны расти <code>fromTr</code> и <code>toNet</code> вместо <code>noct=...</code>.</p>
     </div>
   </details>
 <script>
