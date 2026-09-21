@@ -16,7 +16,7 @@
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.6"
+MODULE_VERSION="0.2.7"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
