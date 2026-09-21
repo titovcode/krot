@@ -352,6 +352,10 @@
 
     var container = document.getElementById('instances');
     container.innerHTML = '';
+    var TRANSPORT_LABELS = {
+      yandex: 'Yandex Docs', vyandex: 'Yandex Volga', oneme: 'MAX / OneMe',
+      cupsonline: 'Cups.online', mailru: 'Mail.ru Docs'
+    };
     (state.instances || []).forEach(function (inst) {
       var div = document.createElement('div');
       div.className = 'instance';
@@ -360,12 +364,26 @@
       var urlLine = inst.url
         ? '<div class="instance-url" title="' + escapeHtml(inst.url) + '">' + escapeHtml(inst.url) + '</div>'
         : '';
+      // Meta line mirrors every option that matters for the tunnel, so a
+      // save is verifiable in the card itself without opening the form.
+      var metaBits = [
+        TRANSPORT_LABELS[inst.transport] || inst.transport,
+        (inst.exit_mode || 'l3').toUpperCase(),
+        'кодек: ' + (inst.codec || 'batched'),
+        'порт: ' + (inst.listen_port || '4545')
+      ];
+      if (inst.has_encryption) {
+        metaBits.push('AES вкл');
+      }
+      if (inst.debug === '1') {
+        metaBits.push('debug');
+      }
       div.innerHTML =
         '<div class="instance-header">' +
         '  <div style="min-width:0">' +
         '    <span class="dot ' + (active ? 'on' : 'off') + '"></span>' +
         '    <span class="instance-name">' + escapeHtml(inst.label || inst.id) + '</span>' +
-        '    <div class="instance-meta">' + escapeHtml(inst.transport) + ' / ' + escapeHtml(inst.exit_mode) + ' \u00b7 ' + stateText + '</div>' +
+        '    <div class="instance-meta">' + escapeHtml(metaBits.join(' · ')) + ' · ' + stateText + '</div>' +
         '  </div>' +
         '  <div class="instance-actions">' +
         '    <button class="ghost" data-edit="' + escapeHtml(inst.id) + '">Изменить</button>' +
@@ -420,7 +438,9 @@
     document.getElementById('f-max_token').value = inst ? inst.max_token : '';
     document.getElementById('f-max_uid').value = inst ? inst.max_uid : '';
     document.getElementById('f-codec').value = inst ? inst.codec : 'batched';
-    document.getElementById('f-encryption_key').value = inst ? inst.encryption_key : '';
+    // state.js never sends the key value itself (has_encryption only), so
+    // editing keeps the stored key untouched unless the user types a new one.
+    document.getElementById('f-encryption_key').value = '';
     document.getElementById('f-local_ip').value = inst ? inst.local_ip : '';
     document.getElementById('f-listen_port').value = inst ? inst.listen_port : '4545';
     updateTransportFields();

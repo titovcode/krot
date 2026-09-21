@@ -16,7 +16,7 @@
 set -e
 
 MODULE_ID="openflux"
-MODULE_VERSION="0.2.5"
+MODULE_VERSION="0.2.6"
 OF_REPO="${OF_REPO:-titovcode/krot}"
 OF_BRANCH="${OF_BRANCH:-main}"
 OF_PAYLOAD_DIR="${OF_PAYLOAD_DIR:-}"
@@ -562,10 +562,13 @@ instance_json() {
     config_get codec "$section" "codec" "batched"
     config_get local_ip "$section" "local_ip" ""
     config_get debug "$section" "debug" "0"
+    config_get encryption_key "$section" "encryption_key" ""
 
     [ "$first" -eq 0 ] && printf ','
     first=0
-    printf '{ "id": "%s", "label": "%s", "transport": "%s", "exit_mode": "%s", "url": "%s", "max_token": "%s", "max_uid": "%s", "listen_port": "%s", "codec": "%s", "local_ip": "%s", "debug": "%s", "enabled": %s }\n' \
+    # encryption_key is exposed as has_encryption (bool), never the value:
+    # state.js is world-readable via uhttpd.
+    printf '{ "id": "%s", "label": "%s", "transport": "%s", "exit_mode": "%s", "url": "%s", "max_token": "%s", "max_uid": "%s", "listen_port": "%s", "codec": "%s", "local_ip": "%s", "debug": "%s", "has_encryption": %s, "enabled": %s }\n' \
         "$(json_escape "$section")" \
         "$(json_escape "$label")" \
         "$(json_escape "$transport")" \
@@ -577,6 +580,7 @@ instance_json() {
         "$(json_escape "$codec")" \
         "$(json_escape "$local_ip")" \
         "$(json_escape "$debug")" \
+        "$([ -n "$encryption_key" ] && echo true || echo false)" \
         "$([ "$enabled" -eq 1 ] && echo true || echo false)"
 }
 
