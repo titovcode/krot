@@ -255,8 +255,10 @@ fi
 
 # l4 keeps a localhost-only SOCKS fallback listener (clients connect to the
 # transport directly; the port is a fallback documented upstream as --socks5).
+# To accept connections from LAN clients (e.g., phones), set listen_host to 0.0.0.0.
+config_get listen_host "$SECTION" "listen_host" "127.0.0.1"
 if [ "$exit_mode" = "l4" ]; then
-    set -- "$@" --socks5 "127.0.0.1:${listen_port}"
+    set -- "$@" --socks5 "${listen_host}:${listen_port}"
 fi
 
 log "starting openflux ($transport, $exit_mode, batch=${batch_bytes}B/${batch_count}pkt/${batch_linger_ms}ms)"
