@@ -235,14 +235,19 @@ if [ -n "$egress_interface" ]; then
                 nft insert rule inet KrotTable mangle_output meta skuid "$EGRESS_UID" meta mark set 0x00200000 counter 2>/dev/null || true
             fi
         fi
-        # Routing table 473 mirrors the egress interface's own default route
-        # (works for wireguard p2p links and gateways alike). Idempotent.
+        # Routing table 473 mirrors the egress interface's own default route.
+        # Gatewayed interfaces (pppoe) have "default via ... dev X"; AmneziaWG/
+        # WireGuard point-to-point links usually have no default route in main
+        # at all — for them an onlink "default dev IFACE" route is required.
         if ! ip route show table 473 2>/dev/null | grep -q "dev $egress_interface"; then
             route_line="$(ip route show table main 2>/dev/null | grep "dev $egress_interface" | grep "^default")"
             if [ -n "$route_line" ]; then
                 via="$(printf '%s' "$route_line" | awk '{for(i=1;i<NF;i++) if($i=="via") print $(i+1)}')"
                 [ -n "$via" ] && ip route add "$via/32" dev "$egress_interface" table 473 2>/dev/null
                 ip route add $route_line table 473 2>/dev/null
+            elif ip link show "$egress_interface" 2>/dev/null | grep -q 'POINTOPOINT'; then
+                ip route replace default dev "$egress_interface" table 473 2>/dev/null || \
+                    log "WARNING: failed to add onlink default route via $egress_interface"
             fi
         fi
         ip rule del uidrange "$EGRESS_UID-$EGRESS_UID" table 473 2>/dev/null

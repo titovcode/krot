@@ -26,7 +26,9 @@ Upstream-проект: <https://github.com/p1neappleXpress/OpenFlux>
 2. `/tmp/openflux` — вручную положенный бинарник (как в issue #44: собрать из
    исходников, `scp -O openflux root@<router>:/tmp/openflux`, запустить install
    ещё раз).
-3. Пейлоад модуля `files/bin/openflux-linux-<arch>`.
+3. Пейлоад модуля: `openflux-linux-<arch>` в одной из раскладок внутри
+   `OF_PAYLOAD_DIR` — `bin/…`, `files/bin/…` или `dist/…` (последняя — то, что
+   печатает `hub/openflux/build-binaries.sh`, `dist` игнорируется git'ом).
 4. Пиннутый релиз `titovcode/krot` (тег `openflux-0.1.0`) — как у olcrtc.
 5. Релизы upstream `p1neappleXpress/OpenFlux` (Linux-сборки там пока не
    публикуются).

@@ -139,13 +139,23 @@ install_binary() {
         msg "installed openflux (from /tmp/openflux)"
         return 0
     fi
-    if [ -n "$OF_PAYLOAD_DIR" ] && [ -f "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" ]; then
-        msg "Installing binary from payload..."
-        mkdir -p "$OF_DIR"
-        cp "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" "$OF_BIN"
-        chmod 0755 "$OF_BIN"
-        msg "installed openflux (from payload)"
-        return 0
+    if [ -n "$OF_PAYLOAD_DIR" ]; then
+        # Accept both layouts: historical files/bin/... and the current
+        # build-binaries.sh output in dist/...
+        for payload_bin in \
+            "$OF_PAYLOAD_DIR/bin/openflux-linux-${BIN_LABEL}" \
+            "$OF_PAYLOAD_DIR/files/bin/openflux-linux-${BIN_LABEL}" \
+            "$OF_PAYLOAD_DIR/dist/openflux-linux-${BIN_LABEL}"
+        do
+            if [ -f "$payload_bin" ]; then
+                msg "Installing binary from payload: $payload_bin"
+                mkdir -p "$OF_DIR"
+                cp "$payload_bin" "$OF_BIN"
+                chmod 0755 "$OF_BIN"
+                msg "installed openflux (from payload)"
+                return 0
+            fi
+        done
     fi
 
     # Read bin_base from UCI config if not set via environment.
