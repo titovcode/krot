@@ -1844,6 +1844,10 @@ hub_detect_installed_version() {
             [ -f /opt/openflux/VERSION ] && { head -n 1 /opt/openflux/VERSION 2>/dev/null; return 0; }
             [ -f /usr/lib/krot-openflux/VERSION ] && head -n 1 /usr/lib/krot-openflux/VERSION 2>/dev/null
             ;;
+        xray)
+            [ -f /etc/xray/VERSION ] && { head -n 1 /etc/xray/VERSION 2>/dev/null; return 0; }
+            [ -x /usr/bin/xray ] && /usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}'
+            ;;
     esac
 }
 
@@ -1880,6 +1884,10 @@ hub_module_installed_status() {
         openflux)
             is_openflux_installed || return 1
             hub_installed_version="$(get_openflux_version 2>/dev/null || true)"
+            ;;
+        xray)
+            is_xray_installed || return 1
+            hub_installed_version="$(get_xray_version 2>/dev/null || true)"
             ;;
         *)
             return 1
@@ -1925,6 +1933,15 @@ get_openflux_version() {
     head -n 1 /opt/openflux/VERSION 2>/dev/null \
         || head -n 1 /usr/lib/krot-openflux/VERSION 2>/dev/null \
         || echo "installed"
+}
+
+is_xray_installed() {
+    [ -x /etc/init.d/xray ] && [ -x /usr/bin/xray ]
+}
+
+get_xray_version() {
+    [ -f /etc/xray/VERSION ] && { head -n 1 /etc/xray/VERSION 2>/dev/null; return 0; }
+    [ -x /usr/bin/xray ] && /usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}' || echo "installed"
 }
 
 hub_get_modules() {

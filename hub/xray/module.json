@@ -1,0 +1,14 @@
+{
+  "id": "xray",
+  "name": "Xray-core Sidecar",
+  "description": "High-performance proxy core (VLESS+Reality, VMess, Trojan, ShadowTLS, WARP noise). Runs as a local sidecar service (SOCKS5/HTTP inbound on 127.0.0.1:10808) for K.R.O.T. routing rules.",
+  "category": "tunnel",
+  "author": "XTLS",
+  "project_url": "https://github.com/XTLS/Xray-core",
+  "component": "xray",
+  "repo": "titovcode/krot",
+  "version": "26.3.27",
+  "install_script": "hub/xray/install.sh",
+  "update_script": "hub/xray/update.sh",
+  "remove_script": "hub/xray/remove.sh"
+}
