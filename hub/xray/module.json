@@ -1,13 +1,37 @@
 {
   "id": "xray",
-  "name": "Xray-core Sidecar",
-  "description": "High-performance proxy core (VLESS+Reality, VMess, Trojan, ShadowTLS, WARP noise). Runs as a local sidecar service (SOCKS5/HTTP inbound on 127.0.0.1:10808) for K.R.O.T. routing rules.",
+  "name": "Xray-core",
+  "description": "High-performance proxy core (VLESS+Reality, VMess, Trojan, ShadowTLS, WARP noise). Runs as a local sidecar service and contributes the \"Xray — Xray JSON\" rule action: every K.R.O.T. rule gets its own complete Xray config (unlimited rules), which K.R.O.T. renders and manages for you.",
   "category": "tunnel",
   "author": "XTLS",
   "project_url": "https://github.com/XTLS/Xray-core",
   "component": "xray",
   "repo": "titovcode/krot",
   "version": "26.3.27",
+  "actions": [
+    {
+      "id": "xray",
+      "label": "Xray — Xray JSON",
+      "description": "Route matched traffic through the local Xray-core sidecar using this rule's own complete Xray JSON config (its SOCKS inbound port is used automatically).",
+      "outbound_json": {
+        "type": "socks",
+        "server": "127.0.0.1",
+        "server_port": 10808,
+        "version": "5"
+      },
+      "config": {
+        "option": "xray_json",
+        "label": "Xray JSON",
+        "description": "Complete Xray-core config for this rule. Its SOCKS inbound port is used automatically for the rule's outbound.",
+        "format": "xray",
+        "template": "hub/xray/config.template.json",
+        "render_path": "/etc/xray/conf.d/${section}.json",
+        "render_service": "xray",
+        "render_dir": "/etc/xray/conf.d",
+        "auto_port": true
+      }
+    }
+  ],
   "install_script": "hub/xray/install.sh",
   "update_script": "hub/xray/update.sh",
   "remove_script": "hub/xray/remove.sh"

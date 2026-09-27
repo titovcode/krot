@@ -127,7 +127,11 @@ install_binary() {
 install_binary
 
 # ── 2. Service & Configuration ─────────────────────────────────────────
-mkdir -p /etc/xray /etc/config /etc/init.d
+# /etc/xray/conf.d holds the per-rule Xray fragments that K.R.O.T. renders for
+# rules using the "Xray — Xray JSON" action (see module.json `config`). The
+# service loads them through its "-confdir" command line flag, so the directory
+# has to exist before Xray starts.
+mkdir -p /etc/xray /etc/xray/conf.d /etc/config /etc/init.d
 
 if [ -f "files/etc/init.d/xray" ]; then
     cp "files/etc/init.d/xray" /etc/init.d/xray
@@ -160,6 +164,13 @@ if [ ! -f /etc/xray/config.json ]; then
     chmod 0644 /etc/xray/config.json
 fi
 
+# Xray-core ignores a "confdir" key inside the JSON config (verified against
+# 26.3.27: `xray run -dump` with and without the key produces the same merged
+# config) — additional configs are only picked up through the "-confdir"
+# command line flag, which the init script passes. The mkdir above is all the
+# installer has to do: Xray refuses to start when -confdir points at a missing
+# directory, and it never rewrites a user-edited /etc/xray/config.json.
+
 if [ -x /usr/bin/xray ] && [ ! -f /etc/xray/VERSION ]; then
     VER="$(/usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}')"
     [ -n "$VER" ] && echo "$VER" > /etc/xray/VERSION
@@ -170,13 +181,17 @@ fi
 /etc/init.d/xray restart 2>/dev/null || /etc/init.d/xray start 2>/dev/null || true
 
 msg ""
-msg "Xray-core sidecar installed successfully!"
-msg "Config file: /etc/xray/config.json"
-msg "Default SOCKS5 inbound: 127.0.0.1:10808"
-msg "Default HTTP inbound:   127.0.0.1:10809"
+msg "Xray-core installed successfully!"
+msg "Service base config:  /etc/xray/config.json"
+msg "Per-rule fragments:   /etc/xray/conf.d/<rule>.json (rendered by K.R.O.T.)"
+msg "Base SOCKS5 inbound:  127.0.0.1:10808   HTTP:  127.0.0.1:10809"
 msg ""
-msg "In K.R.O.T. Web UI, create an outbound section with:"
-msg "  Action: JSON outbound"
-msg "  Outbound JSON:"
-msg "  {\"type\":\"socks\",\"server\":\"127.0.0.1\",\"server_port\":10808,\"version\":\"5\"}"
+msg "You do not need to edit any JSON by hand: this module contributes the"
+msg "\"Xray — Xray JSON\" action to K.R.O.T. -> Rules. Select it on a rule and"
+msg "paste a complete Xray-core config for that rule (the bundled template"
+msg "hub/xray/config.template.json is pre-filled in the field as a starting"
+msg "point - add your own servers to its outbounds). K.R.O.T. writes the"
+msg "config to /etc/xray/conf.d, restarts this service when it changes and"
+msg "points the rule at the rule's own SOCKS inbound port automatically."
+msg "There is no limit on the number of such rules."
 msg ""

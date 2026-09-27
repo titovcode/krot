@@ -33,14 +33,36 @@ start_service() {
         return 1
     fi
 
+    # Per-rule Xray fragments are rendered by K.R.O.T. into /etc/xray/conf.d.
+    # Xray-core ignores a "confdir" key inside the JSON config (verified
+    # against 26.3.27: `run -dump` with and without the key merges the exact
+    # same set of inbounds); the only way to load them is the "-confdir"
+    # command line flag, so it has to be part of the service command.
+    #
+    # A directory holding a broken fragment must not take the base exit down
+    # (other rules depend on it): validate with the fragments first and fall
+    # back to the base config alone when that fails. A missing directory is
+    # created here so manually placed drop-ins always have a home.
+    mkdir -p /etc/xray/conf.d 2> /dev/null || true
+    local use_confdir=0
+    if "$PROG" run -test -c "$config_file" -confdir /etc/xray/conf.d > /dev/null 2>&1; then
+        use_confdir=1
+    else
+        logger -t xray "Per-rule configs in /etc/xray/conf.d are invalid; starting with the base config only"
+    fi
+
     # Verify config before starting
-    if ! "$PROG" run -test -c "$config_file" >/dev/null 2>&1; then
+    if ! "$PROG" run -test -c "$config_file" > /dev/null 2>&1; then
         logger -t xray "Config validation failed for $config_file"
         return 1
     fi
 
     procd_open_instance
-    procd_set_param command "$PROG" run -c "$config_file"
+    if [ "$use_confdir" -eq 1 ]; then
+        procd_set_param command "$PROG" run -c "$config_file" -confdir /etc/xray/conf.d
+    else
+        procd_set_param command "$PROG" run -c "$config_file"
+    fi
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1

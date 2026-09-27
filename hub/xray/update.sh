@@ -1,6 +1,8 @@
 #!/bin/sh
 # Xray-core updater for K.R.O.T. Hub
-# Preserves /etc/xray/config.json and /etc/config/xray
+# Preserves /etc/xray/config.json, /etc/config/xray and the per-rule Xray
+# fragments that K.R.O.T. renders into /etc/xray/conf.d — the update only
+# swaps the binary, it never deletes or regenerates rule configs.
 set -e
 
 TMP_DIR="$(mktemp -d /tmp/hub-xray.XXXXXX 2>/dev/null || { mkdir -p /tmp/hub-xray.$$; echo /tmp/hub-xray.$$; })"
@@ -60,6 +62,11 @@ case "$ARCH" in
     riscv64)          XRAY_ARCH="riscv64" ;;
     *)                fail "Unsupported architecture: $ARCH" ;;
 esac
+
+# Keep the config layout the binary expects intact: /etc/xray/conf.d holds the
+# per-rule Xray fragments rendered by K.R.O.T. — never remove or rewrite them
+# here, only make sure the directory exists so the service can start.
+mkdir -p /etc/xray/conf.d
 
 msg "Fetching latest Xray-core release info..."
 release_json="$(http_get "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null || true)"
