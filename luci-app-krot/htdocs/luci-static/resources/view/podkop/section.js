@@ -328,12 +328,35 @@ const NFQWS_REQUIRED_ARG_OPTIONS = new Set([
   "--wssize-cutoff",
   "--wssize-forced-cutoff",
 ]);
+const BUILTIN_RULE_ACTIONS = [
+  "proxy",
+  "vpn",
+  "direct",
+  "block",
+  "zapret",
+  "byedpi",
+  "outbound",
+];
+// UCI option names a module must not claim as its per-rule config option:
+// they are already owned by the built-in rule widgets in `createSectionContent`.
+const RESERVED_RULE_CONFIG_OPTIONS = [
+  "action",
+  "enabled",
+  "label",
+  "icon",
+  "outbound_json",
+  "nfqws_opt",
+  "byedpi_cmd_opts",
+];
 const actionProvidersAvailabilityState = {
   loaded: false,
   zapretInstalled: false,
   byedpiInstalled: false,
+  moduleActions: [],
+  moduleActionsLoaded: false,
 };
 let actionProvidersAvailabilityPromise = null;
+let hubModuleActionsPromise = null;
 const outboundNameChoicesCache = {};
 const COUNTRY_CODES =
   "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW XK".split(
@@ -363,7 +386,179 @@ function updateActionProvidersAvailabilityState(nextState) {
     );
   }
 
+  if (Array.isArray(nextState.moduleActions)) {
+    actionProvidersAvailabilityState.moduleActions = nextState.moduleActions;
+    actionProvidersAvailabilityState.moduleActionsLoaded = true;
+  }
+
   actionProvidersAvailabilityPromise = null;
+}
+
+// Module-provided rule actions: a Hub module can declare its own entries in
+// `module.json` (`actions: [{ id, label, description, outbound_json, config }]`).
+// K.R.O.T. stays a wrapper — the module ships the behaviour, K.R.O.T. exposes
+// it in the rule "Action" dropdown and routes it through the JSON-outbound
+// primitive.
+//
+// `config` is optional: a module can additionally ask for its own per-rule
+// text option (e.g. `xray_json`) holding a config document the module renders
+// itself. `template_text` is injected into `config` by the backend
+// (`hub_get_modules`) from the manifest `template` file.
+function normalizeModuleActionConfig(rawConfig) {
+  if (!rawConfig || typeof rawConfig !== "object") {
+    return null;
+  }
+
+  const option = rawConfig.option ? `${rawConfig.option}` : "";
+
+  if (!/^[A-Za-z0-9_-]+$/.test(option)) {
+    return null;
+  }
+
+  if (RESERVED_RULE_CONFIG_OPTIONS.indexOf(option) !== -1) {
+    return null;
+  }
+
+  return {
+    option,
+    label: rawConfig.label ? `${rawConfig.label}` : "",
+    description: rawConfig.description ? `${rawConfig.description}` : "",
+    format: rawConfig.format ? `${rawConfig.format}` : "none",
+    templateText:
+      typeof rawConfig.template_text === "string"
+        ? rawConfig.template_text
+        : "",
+  };
+}
+
+function normalizeModuleActions(hubModules) {
+  const modules = Array.isArray(hubModules)
+    ? hubModules
+    : typeof hubModules === "string"
+      ? (() => {
+          try {
+            return JSON.parse(hubModules);
+          } catch (_error) {
+            return [];
+          }
+        })()
+      : [];
+
+  const actions = [];
+  const seen = {};
+
+  modules.forEach((mod) => {
+    if (!mod || mod.installed !== true) {
+      return;
+    }
+
+    const declared = Array.isArray(mod.actions) ? mod.actions : [];
+
+    declared.forEach((entry) => {
+      if (!entry) {
+        return;
+      }
+
+      const id = entry.id ? `${entry.id}` : "";
+
+      if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+        return;
+      }
+
+      if (BUILTIN_RULE_ACTIONS.indexOf(id) !== -1 || seen[id]) {
+        return;
+      }
+
+      seen[id] = true;
+      actions.push({
+        id,
+        label: entry.label ? `${entry.label}` : id,
+        description: entry.description ? `${entry.description}` : "",
+        moduleId: mod.id ? `${mod.id}` : "",
+        outboundJson:
+          typeof entry.outbound_json === "undefined"
+            ? null
+            : entry.outbound_json,
+        config: normalizeModuleActionConfig(entry.config),
+      });
+    });
+  });
+
+  return actions;
+}
+
+function loadHubModuleActions() {
+  if (
+    !main.PodkopShellMethods ||
+    typeof main.PodkopShellMethods.hubGetModules !== "function"
+  ) {
+    return Promise.resolve([]);
+  }
+
+  // Single-flight: both the availability loader and the early warm-up issued by
+  // `createSectionContent` call this, the network request runs once.
+  if (!hubModuleActionsPromise) {
+    hubModuleActionsPromise = main.PodkopShellMethods.hubGetModules().then(
+      (result) => {
+        if (!result || !result.success) {
+          return [];
+        }
+
+        return normalizeModuleActions(result.data);
+      },
+    );
+
+    hubModuleActionsPromise.catch(() => {
+      hubModuleActionsPromise = null;
+    });
+  }
+
+  return hubModuleActionsPromise;
+}
+
+function getModuleActions() {
+  return Array.isArray(actionProvidersAvailabilityState.moduleActions)
+    ? actionProvidersAvailabilityState.moduleActions
+    : [];
+}
+
+// Resolves as soon as the module action list is populated in the UI state.
+// Unlike `ensureActionProvidersAvailabilityLoaded()` it does not mark the
+// zapret/byedpi provider probe as done and does not wait for it, so it can be
+// awaited by form construction code that only needs the Hub module data; the
+// hub request itself is shared (single-flight) with the availability probe.
+function ensureModuleActionsLoaded() {
+  if (actionProvidersAvailabilityState.moduleActionsLoaded) {
+    return Promise.resolve(getModuleActions());
+  }
+
+  return loadHubModuleActions()
+    .then((actions) => {
+      actionProvidersAvailabilityState.moduleActions = actions;
+      actionProvidersAvailabilityState.moduleActionsLoaded = true;
+      return getModuleActions();
+    })
+    .catch(() => {
+      // Never let a failed hub lookup reject: callers render the rule editor
+      // right after this resolves. Keep the loaded flag unset so the next
+      // modal open retries the (already reset) single-flight request.
+      return getModuleActions();
+    });
+}
+
+function getModuleActionById(action) {
+  const normalized = `${action || ""}`;
+
+  if (!normalized) {
+    return null;
+  }
+
+  return getModuleActions().find((entry) => entry.id === normalized) || null;
+}
+
+// Module actions that ask for an extra per-rule config option.
+function getModuleConfigActions() {
+  return getModuleActions().filter((moduleAction) => moduleAction.config);
 }
 
 function updateActionProvidersAvailabilityFromSystemInfo(systemInfo) {
@@ -543,8 +738,9 @@ function ensureActionProvidersAvailabilityLoaded() {
   actionProvidersAvailabilityPromise = Promise.allSettled([
     main.PodkopShellMethods.getZapretStatus(),
     main.PodkopShellMethods.getByedpiStatus(),
+    loadHubModuleActions(),
   ])
-    .then(([zapretResult, byedpiResult]) => {
+    .then(([zapretResult, byedpiResult, actionsResult]) => {
       const zapret =
         zapretResult && zapretResult.status === "fulfilled"
           ? zapretResult.value
@@ -553,7 +749,14 @@ function ensureActionProvidersAvailabilityLoaded() {
         byedpiResult && byedpiResult.status === "fulfilled"
           ? byedpiResult.value
           : null;
+      const moduleActions =
+        actionsResult &&
+        actionsResult.status === "fulfilled" &&
+        Array.isArray(actionsResult.value)
+          ? actionsResult.value
+          : [];
 
+      actionProvidersAvailabilityState.moduleActions = moduleActions;
       actionProvidersAvailabilityState.loaded = true;
       actionProvidersAvailabilityState.zapretInstalled = Boolean(
         zapret && zapret.success && zapret.data && zapret.data.installed,
@@ -567,6 +770,7 @@ function ensureActionProvidersAvailabilityLoaded() {
       actionProvidersAvailabilityState.loaded = false;
       actionProvidersAvailabilityState.zapretInstalled = false;
       actionProvidersAvailabilityState.byedpiInstalled = false;
+      actionProvidersAvailabilityState.moduleActions = [];
       return actionProvidersAvailabilityState;
     })
     .finally(() => {
@@ -594,6 +798,11 @@ function getRuleResolvedAction(section_id) {
 }
 
 function getActionOptionLabel(action) {
+  const moduleAction = getModuleActionById(action);
+  if (moduleAction) {
+    return moduleAction.label;
+  }
+
   switch (`${action}`) {
     case "block":
       return "Block";
@@ -602,14 +811,15 @@ function getActionOptionLabel(action) {
     case "vpn":
       return "VPN";
     case "zapret":
-      return "Zapret";
+      return "Zapret2";
     case "byedpi":
       return "ByeDPI";
     case "outbound":
       return _("JSON outbound");
     case "proxy":
-    default:
       return "Proxy";
+    default:
+      return `${action}`;
   }
 }
 
@@ -617,7 +827,7 @@ function getRuleActionDisplayValue(section_id) {
   const action = getRuleResolvedAction(section_id);
 
   if (action === "zapret") {
-    return "Zapret";
+    return "Zapret2";
   }
 
   if (action === "byedpi") {
@@ -646,6 +856,118 @@ function populateActionOptionValues(option) {
     option.value("byedpi", getActionOptionLabel("byedpi"));
   }
   option.value("outbound", getActionOptionLabel("outbound"));
+  getModuleActions().forEach((moduleAction) => {
+    option.value(moduleAction.id, moduleAction.label);
+  });
+}
+
+const MODULE_CONFIG_JSON_FORMATS = ["json", "xray"];
+
+// Client-side pre-check of a module config field. The module re-validates the
+// rendered document when it applies it, so this only rejects obvious mistakes.
+function validateModuleConfigValue(format, value) {
+  const text = value ? `${value}`.trim() : "";
+
+  // A rule works without a per-rule config, an empty field is always valid.
+  if (!text.length) {
+    return true;
+  }
+
+  if (MODULE_CONFIG_JSON_FORMATS.indexOf(format) === -1) {
+    return true;
+  }
+
+  let parsed = null;
+
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return _("Invalid JSON: %s").format(
+      error && error.message ? error.message : `${error}`,
+    );
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return _("Invalid JSON: %s").format(_("expecting a JSON object"));
+  }
+
+  if (format === "xray" && !Array.isArray(parsed.inbounds)) {
+    return _("Invalid Xray config: %s").format(
+      _("the document must declare an inbounds array"),
+    );
+  }
+
+  return true;
+}
+
+function buildModuleConfigOption(target, moduleAction) {
+  const config = moduleAction.config;
+
+  if (!config || target.getOption(config.option)) {
+    return null;
+  }
+
+  // Label and description come from the module manifest at runtime, so they
+  // cannot be translated: `_()` on a dynamic string is a no-op, use the raw
+  // manifest text as-is.
+  const title = config.label || moduleAction.label;
+  const description = [
+    config.description,
+    _("Leaving this field empty is allowed. The module validates it on apply."),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const o = target.taboption(
+    "settings",
+    form.TextValue,
+    config.option,
+    title,
+    description,
+  );
+
+  o.depends("action", moduleAction.id);
+  o.rows = 14;
+  o.wrap = "soft";
+  o.textarea = true;
+  o.modalonly = true;
+  o.rmempty = true;
+  // Pre-fills the shipped template for rules that never had this option, which
+  // is how a module config gets inserted when the action is picked.
+  o.default = config.templateText || "";
+
+  // The option is created asynchronously (module actions arrive from the Hub),
+  // so it may miss the snapshot the parent map took while loading. Read the
+  // live UCI model directly, the same way the rest of this file does, so the
+  // saved value is always shown instead of the template default.
+  o.load = function (section_id) {
+    return uci.get(UCI_PACKAGE, section_id, config.option);
+  };
+  o.cfgvalue = function (section_id) {
+    const value = uci.get(UCI_PACKAGE, section_id, config.option);
+    return value == null ? null : `${value}`;
+  };
+  o.write = function (section_id, value) {
+    const normalized = value ? `${value}`.trim() : "";
+
+    if (normalized.length) {
+      uci.set(UCI_PACKAGE, section_id, config.option, normalized);
+    } else {
+      uci.unset(UCI_PACKAGE, section_id, config.option);
+    }
+  };
+  o.validate = function (_section_id, value) {
+    return validateModuleConfigValue(config.format, value);
+  };
+  configureTextareaOption(o);
+
+  return o;
+}
+
+function ensureModuleConfigOptions(target) {
+  getModuleConfigActions().forEach((moduleAction) => {
+    buildModuleConfigOption(target, moduleAction);
+  });
 }
 
 function setFlagOptionWidgetValue(section_id, optionName, enabled) {
@@ -2678,6 +3000,75 @@ function createSectionContent(section) {
       return this.cfgvalue(section_id);
     });
   };
+  o.write = function (section_id, value) {
+    const action = `${value || ""}`.trim() || "proxy";
+    const previousAction = getRuleConfiguredAction(section_id);
+
+    uci.set(UCI_PACKAGE, section_id, "action", action);
+
+    // Everything below depends on the Hub module data (the outbound JSON the
+    // backend routes the rule through, and the module's own config field).
+    // Resolve it before acting on it: a save performed while the listing was
+    // never fetched — or while an earlier attempt was still failing — would
+    // otherwise leave the rule pointing at a module action without the
+    // outbound copy. The request is single-flight, so an already loaded listing
+    // resolves immediately, and the backend resolves the module's template on
+    // its own when the listing cannot be fetched at all.
+    return ensureModuleActionsLoaded().then(() => {
+      const previousModuleAction = getModuleActionById(previousAction);
+
+      // A module-provided action carries its own sing-box outbound JSON. Copy it
+      // onto the rule so the backend can route it through the JSON-outbound
+      // primitive without knowing anything about the module.
+      const moduleAction = getModuleActionById(action);
+      if (moduleAction) {
+        const payload = moduleAction.outboundJson;
+        if (typeof payload === "string") {
+          uci.set(UCI_PACKAGE, section_id, "outbound_json", payload);
+        } else if (payload && typeof payload === "object") {
+          uci.set(
+            UCI_PACKAGE,
+            section_id,
+            "outbound_json",
+            JSON.stringify(payload),
+          );
+        }
+
+        // Seeding: a module may also ship a per-rule config document (e.g. the
+        // Xray JSON). Insert its template when the rule never had that option,
+        // so picking the action already installs the module config. An already
+        // edited value is never overwritten.
+        const config = moduleAction.config;
+        if (config && config.templateText) {
+          const currentValue = uci.get(
+            UCI_PACKAGE,
+            section_id,
+            config.option,
+          );
+          if (currentValue == null || `${currentValue}` === "") {
+            uci.set(UCI_PACKAGE, section_id, config.option, config.templateText);
+          }
+        }
+        return;
+      }
+
+      // Leaving a module action for a built-in action that does not manage its
+      // own JSON drops the auto-copied outbound_json so no stale template stays.
+      if (previousModuleAction && action !== "outbound") {
+        uci.unset(UCI_PACKAGE, section_id, "outbound_json");
+      }
+
+      // Same for a module provided config option: it belongs to the action we
+      // are leaving, so it must not stay behind on the rule.
+      if (previousModuleAction && previousModuleAction.config) {
+        uci.unset(
+          UCI_PACKAGE,
+          section_id,
+          previousModuleAction.config.option,
+        );
+      }
+    });
+  };
   o = section.taboption(
     "settings",
     form.TextValue,
@@ -2858,6 +3249,31 @@ function createSectionContent(section) {
     return validation.valid ? true : validation.message;
   };
   configureTextareaOption(o);
+
+  // Module-provided per-rule config fields (e.g. `xray_json`).
+  //
+  // LuCI caveat: `section.taboption(...)` normally runs synchronously while
+  // the view builds the form, but the module action list is only known after
+  // an async `hub_get_modules` round-trip. Two hooks make this robust without
+  // a second network call:
+  //  1. `addModalOptions` below — LuCI awaits its (optional) promise before
+  //     rendering the rule edit modal, so awaiting the shared single-flight
+  //     module load there guarantees the dynamic options exist in every modal,
+  //     even the very first one.
+  //  2. The warm-up `ensureModuleConfigOptions(section)` right after it — once
+  //     the hub data is cached (or as soon as the in-flight load resolves), the
+  //     options are also added to the main section so `cloneOptions()` copies
+  //     them into subsequently opened modals and table rendering stays stable.
+  ensureModuleConfigOptions(section);
+  ensureModuleActionsLoaded().then(() => {
+    ensureModuleConfigOptions(section);
+  });
+
+  section.addModalOptions = function (modalSection, _section_id, _ev) {
+    return ensureModuleActionsLoaded().then(() => {
+      ensureModuleConfigOptions(modalSection);
+    });
+  };
 
   o = section.taboption(
     "settings",
