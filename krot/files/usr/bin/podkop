@@ -175,6 +175,14 @@ PODKOP_ZAPRET_MISSING_WARNING_EMITTED=0
 PODKOP_BYEDPI_MISSING_WARNING_EMITTED=0
 PODKOP_URLTEST_NEW_ENABLED_SECTIONS=""
 PODKOP_URLTEST_SELECTOR_SWITCHES=""
+# Cached "actions[].config" declarations collected from installed Hub modules.
+PODKOP_MODULE_CONFIG_OPTIONS=""
+# Cached "actions[].outbound_json" declarations collected from installed Hub
+# modules: the fallback for rules that carry no outbound_json of their own.
+PODKOP_MODULE_ACTION_OUTBOUNDS=""
+PODKOP_MODULE_CONFIG_CHANGED=0
+PODKOP_MODULE_CONFIG_STAGING_FILE=""
+PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE=""
 SUBSCRIPTION_DEFERRED_SECTIONS=""
 SUBSCRIPTION_STARTUP_BLOCKED_SECTIONS=""
 
@@ -704,7 +712,7 @@ subscription_bootstrap_download_section_is_ready() {
 
     rule_is_enabled "$download_lists_via_proxy_section" || return 1
 
-    action="$(get_rule_action "$download_lists_via_proxy_section")"
+    action="$(get_rule_action_primitive "$download_lists_via_proxy_section")"
     case "$action" in
     proxy)
         config_get selector_proxy_links "$download_lists_via_proxy_section" "selector_proxy_links"
@@ -720,7 +728,7 @@ subscription_bootstrap_download_section_is_ready() {
         return 1
         ;;
     outbound)
-        config_get outbound_json "$download_lists_via_proxy_section" "outbound_json"
+        outbound_json="$(get_rule_outbound_json "$download_lists_via_proxy_section")"
         [ -n "$outbound_json" ] || return 1
         return 0
         ;;
@@ -1728,10 +1736,21 @@ append_sing_box_rule_signature() {
 
     rule_is_enabled "$section" || return 0
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     [ -n "$action" ] || return 0
 
     signature_add "rule.$section.action" "$action"
+
+    # A rule whose raw action carries a module-declared config field must also
+    # fold that field into the signature: editing the pasted config has to
+    # trigger a reload even though sing-box itself never sees the fragment.
+    local module_config_meta module_config_option module_config_value
+    module_config_options > /dev/null
+    if module_config_meta="$(get_rule_module_config_meta "$section")"; then
+        module_config_option="$(printf '%s' "$module_config_meta" | cut -f1)"
+        config_get module_config_value "$section" "$module_config_option"
+        signature_add "rule.$section.$module_config_option" "$module_config_value"
+    fi
 
     case "$action" in
     proxy)
@@ -1795,7 +1814,7 @@ append_sing_box_rule_signature() {
         ;;
     outbound)
         local outbound_json
-        config_get outbound_json "$section" "outbound_json"
+        outbound_json="$(get_rule_outbound_json "$section")"
         signature_add "rule.$section.outbound_json" "$outbound_json"
 
         config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
@@ -2099,6 +2118,12 @@ build_sing_box_signature() {
         config_get download_lists_via_proxy_section "settings" "download_lists_via_proxy_section"
         signature_add "settings.download_lists_via_proxy_section" "$download_lists_via_proxy_section"
     fi
+
+    # Warm the Hub declaration caches in this (non-subshell) context: the
+    # per-rule walks below run in subshells and would otherwise re-query the Hub
+    # for every rule.
+    module_config_options > /dev/null
+    module_action_outbounds > /dev/null
 
     config_foreach append_sing_box_rule_signature "section"
     config_foreach append_sing_box_server_signature "server"
@@ -2694,6 +2719,522 @@ get_rule_action() {
     echo "$action"
 }
 
+# Resolve a rule's configured action to the primitive K.R.O.T. dispatches on.
+#
+# Built-in actions (proxy/vpn/direct/block/zapret/byedpi/outbound) map to
+# themselves. Any other action id is a module-provided action declared by a
+# K.R.O.T. Hub module; as long as an outbound can be resolved for it — the
+# rule's own outbound_json, or the one the installed module declares for that
+# action (see get_rule_outbound_json) — it behaves exactly like the built-in
+# "outbound" primitive. This keeps the backend free of any module-specific
+# knowledge: K.R.O.T. stays a wrapper, modules extend it.
+get_rule_action_primitive() {
+    local section="$1"
+    local action
+
+    config_get action "$section" "action"
+    case "$action" in
+    proxy | vpn | direct | block | zapret | byedpi | outbound)
+        echo "$action"
+        return 0
+        ;;
+    esac
+
+    if [ -n "$action" ] && get_rule_outbound_json "$section" > /dev/null 2>&1; then
+        echo "outbound"
+        return 0
+    fi
+
+    echo "$action"
+}
+
+# Hub modules may declare per-rule config fields in their manifests
+# (module.json -> actions[].config). updater.sh::hub_module_config_options()
+# prints one declaration per line, tab-separated:
+#   module_id action_id option render_path render_service render_dir format auto_port
+# The helpers below are the only consumers, so the field order lives in one
+# place and nothing module-specific ever reaches the rest of the backend.
+module_config_options() {
+    # Cache the declaration table for the whole run: these helpers are called
+    # from per-rule loops (validation, signatures, deployment) and must not
+    # re-read the Hub catalog once per rule. An assignment inside a command
+    # substitution would not survive, so the cache is echoed, not returned.
+    if [ -z "$PODKOP_MODULE_CONFIG_OPTIONS" ]; then
+        if command -v hub_module_config_options > /dev/null 2>&1; then
+            # A missing or broken helper is never fatal: an unavailable Hub
+            # simply means "no module declares a rule config".
+            PODKOP_MODULE_CONFIG_OPTIONS="$(hub_module_config_options 2> /dev/null)" ||
+                PODKOP_MODULE_CONFIG_OPTIONS=" "
+        else
+            PODKOP_MODULE_CONFIG_OPTIONS=" "
+        fi
+        [ -n "$PODKOP_MODULE_CONFIG_OPTIONS" ] || PODKOP_MODULE_CONFIG_OPTIONS=" "
+    fi
+
+    printf '%s\n' "$PODKOP_MODULE_CONFIG_OPTIONS"
+}
+
+module_config_options_declared() {
+    module_config_options > /dev/null
+    printf '%s' "$PODKOP_MODULE_CONFIG_OPTIONS" | grep -q '[^[:space:]]'
+}
+
+# Option names declared by installed modules, deduplicated. Used for masking.
+module_config_option_names() {
+    module_config_options |
+        awk -F '\t' '$3 ~ /^[A-Za-z0-9_-]+$/ && $3 != "outbound_json" { print $3 }' |
+        sort -u
+}
+
+# Sing-box outbounds declared by the installed Hub modules for their rule
+# actions. updater.sh::hub_module_action_outbounds() prints one row per action,
+# tab-separated:
+#   action_id outbound_json
+# Cached for the whole run for the same reason as module_config_options: the
+# helper is reached from per-rule loops (signatures, validation, routing).
+module_action_outbounds() {
+    if [ -z "$PODKOP_MODULE_ACTION_OUTBOUNDS" ]; then
+        if command -v hub_module_action_outbounds > /dev/null 2>&1; then
+            # An unavailable Hub simply means "no module action declares an
+            # outbound"; the rule then has to carry its own outbound_json.
+            PODKOP_MODULE_ACTION_OUTBOUNDS="$(hub_module_action_outbounds 2> /dev/null)" ||
+                PODKOP_MODULE_ACTION_OUTBOUNDS=" "
+        else
+            PODKOP_MODULE_ACTION_OUTBOUNDS=" "
+        fi
+        [ -n "$PODKOP_MODULE_ACTION_OUTBOUNDS" ] || PODKOP_MODULE_ACTION_OUTBOUNDS=" "
+    fi
+
+    printf '%s\n' "$PODKOP_MODULE_ACTION_OUTBOUNDS"
+}
+
+# The outbound a module declared for one action id, or nothing when no
+# installed module declares it. The action id is matched literally, so the
+# charset is restricted to what an action id may contain.
+get_module_action_outbound_json() {
+    local action="$1" resolved
+
+    [ -n "$action" ] || return 1
+    case "$action" in
+    *[!A-Za-z0-9_-]*)
+        return 1
+        ;;
+    esac
+
+    # Warm the run-wide cache in this (non-subshell) context.
+    module_action_outbounds > /dev/null
+
+    resolved="$(printf '%s\n' "$PODKOP_MODULE_ACTION_OUTBOUNDS" |
+        awk -F '\t' -v action="$action" '
+            $1 == action && $2 != "" { print $2; found = 1; exit }
+            END { exit found ? 0 : 1 }
+        ')" && [ -n "$resolved" ] && {
+        printf '%s\n' "$resolved"
+        return 0
+    }
+
+    # The listing carried no row for this action. At boot that happens routinely:
+    # the listing is fetched over the network K.R.O.T. is still bringing up, so
+    # the rule would otherwise be skipped until something else happened to
+    # refresh the listing. Fetch this one action's manifest directly - one small
+    # index request plus the manifests of the modules it names, filtered to the
+    # ones actually installed here.
+    if command -v hub_fetch_action_outbound > /dev/null 2>&1; then
+        resolved="$(hub_fetch_action_outbound "$action" 2> /dev/null)" && [ -n "$resolved" ] || return 1
+        printf '%s\n' "$resolved"
+        return 0
+    fi
+
+    return 1
+}
+
+# The sing-box JSON outbound a rule is routed through.
+#
+# A rule may carry its own outbound_json (hand-written, or copied onto the rule
+# by the UI when a module action was selected). When it does not, the installed
+# Hub module declaring the rule's action provides the document, so a rule that
+# was written through the CLI, restored from a backup, or saved by a release
+# whose UI did not copy the template still works without anyone editing UCI by
+# hand. The module stays the only source of truth; K.R.O.T. only resolves it.
+get_rule_outbound_json() {
+    local section="$1"
+    local action outbound_json
+
+    config_get outbound_json "$section" "outbound_json"
+    if [ -n "$outbound_json" ]; then
+        printf '%s\n' "$outbound_json"
+        return 0
+    fi
+
+    action="$(get_rule_action "$section")"
+    outbound_json="$(get_module_action_outbound_json "$action")" || return 1
+    [ -n "$outbound_json" ] || return 1
+
+    printf '%s\n' "$outbound_json"
+}
+
+# Resolve a rule's raw (configured) action to its module-declared config
+# metadata. Echoes "$option<TAB>$format<TAB>$render_path<TAB>$render_service
+# <TAB>$render_dir<TAB>$auto_port" and returns 0, or returns 1 when the action
+# declares no config field. K.R.O.T. never learns what an "xray" action is: it
+# only renders whatever a module declared for it.
+get_rule_module_config_meta() {
+    local section="$1"
+    local action meta
+
+    [ -n "$section" ] || return 1
+    action="$(get_rule_action "$section")"
+    [ -n "$action" ] || return 1
+
+    meta="$(
+        module_config_options | awk -F '\t' -v action="$action" '
+            $2 == action && $3 ~ /^[A-Za-z0-9_-]+$/ && $3 != "outbound_json" && $6 ~ /^\// {
+                print $3 "\t" $7 "\t" $4 "\t" $5 "\t" $6 "\t" $8
+                exit
+            }
+        '
+    )"
+
+    [ -n "$meta" ] || return 1
+    printf '%s\n' "$meta"
+}
+
+# Predicate: is a module config value acceptable for its declared format?
+# Empty values are always acceptable (the rule then only uses outbound_json).
+module_rule_config_is_valid() {
+    local format="$1"
+    local config_value="$2"
+
+    [ -n "$config_value" ] || return 0
+
+    case "$format" in
+    none)
+        return 0
+        ;;
+    json)
+        printf '%s' "$config_value" | json_utils_ucode valid-json > /dev/null 2>&1
+        ;;
+    xray)
+        printf '%s' "$config_value" | json_utils_ucode valid-xray-config > /dev/null 2>&1
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# Validate the module-declared config field of a rule (see get_rule_module_config_meta).
+#
+# Deliberately not fatal, unlike the built-in validators in this file: one bad
+# paste in one rule must not keep the whole router from coming up. The rule
+# keeps working through its plain outbound_json and only its module fragment is
+# not deployed. This mirrors the existing convention for recoverable rule
+# problems ("provider is not installed" above): log "error" and carry on.
+validate_module_rule_config() {
+    local section="$1"
+    local meta option format config_value
+
+    # Warm the declaration cache in this (non-subshell) context so the helpers
+    # below read it from the process-global instead of re-querying the Hub.
+    module_config_options > /dev/null
+    meta="$(get_rule_module_config_meta "$section")" || return 0
+
+    option="$(printf '%s' "$meta" | cut -f1)"
+    format="$(printf '%s' "$meta" | cut -f2)"
+
+    config_get config_value "$section" "$option"
+    module_rule_config_is_valid "$format" "$config_value" && return 0
+
+    log "Module config option '$option' of rule '$section' is not a valid '$format' document; its fragment will not be deployed." "error"
+    return 0
+}
+
+# Absolute path of the file a rule's config is rendered to.
+#
+# Section names end up inside a filesystem path, so they are restricted to the
+# documented UCI charset; a hostile or accidental "a/../../b" section must not
+# be able to write outside the module's declared directory.
+module_rule_config_target_path() {
+    local render_path="$1"
+    local section="$2"
+
+    case "$section" in
+    '' | *[!A-Za-z0-9._-]* | .* | *..*)
+        return 1
+        ;;
+    esac
+
+    case "$render_path" in
+    /*)
+        printf '%s\n' "${render_path//\$\{section\}/$section}"
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# Collect one rule's module config into the deployment staging directory.
+#
+# Called through config_foreach, so state is passed via globals that
+# deploy_module_rule_configs resets before the walk.
+collect_module_rule_config() {
+    local section="$1"
+    local meta option format render_path render_service render_dir auto_port
+    local config_value target_file dir file_name tmp_file normalized
+
+    rule_is_enabled "$section" || return 0
+    meta="$(get_rule_module_config_meta "$section")" || return 0
+
+    option="$(printf '%s' "$meta" | cut -f1)"
+    format="$(printf '%s' "$meta" | cut -f2)"
+    render_path="$(printf '%s' "$meta" | cut -f3)"
+    render_service="$(printf '%s' "$meta" | cut -f4)"
+    render_dir="$(printf '%s' "$meta" | cut -f5)"
+
+    config_get config_value "$section" "$option"
+    # An empty config field is allowed: the rule simply uses its plain
+    # outbound_json and the module gets no fragment from it.
+    [ -n "$config_value" ] || return 0
+
+    if ! module_rule_config_is_valid "$format" "$config_value"; then
+        # validate_module_rule_config already reported it; do not deploy garbage.
+        return 0
+    fi
+
+    # An "xray" fragment is normalized before it reaches disk: a WireGuard
+    # outbound that lacks the userspace-stack flag is silently dead once it
+    # pairs "dialerProxy", so the flag is set here instead of being trusted to
+    # whatever the user pasted. The helper prints nothing when there is nothing
+    # to change, in which case the original text is deployed verbatim.
+    if [ "$format" = "xray" ]; then
+        normalized="$(printf '%s' "$config_value" |
+            json_utils_ucode xray-normalize-config 2> /dev/null)"
+        [ -n "$normalized" ] && config_value="$normalized"
+    fi
+
+    target_file="$(module_rule_config_target_path "$render_path" "$section")"
+    if [ -z "$target_file" ]; then
+        log "Rule '$section' declares an invalid module config render path '$render_path'; skipped." "error"
+        return 0
+    fi
+
+    dir="${target_file%/*}"
+    file_name="${target_file##*/}"
+
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" 2> /dev/null || {
+            log "Failed to create the module config directory '$dir'; rule '$section' skipped." "warn"
+            return 0
+        }
+    fi
+
+    # Write only on change, mirroring sing_box_save_config: rewriting an
+    # unchanged fragment would restart the module service on every reload.
+    tmp_file="$(mktemp "$dir/.${file_name}.XXXXXX" 2> /dev/null)" || {
+        log "Failed to create a temporary file in '$dir'; rule '$section' skipped." "warn"
+        return 0
+    }
+
+    if ! printf '%s\n' "$config_value" > "$tmp_file" 2> /dev/null; then
+        log "Failed to write module config '$target_file'" "warn"
+        rm -f "$tmp_file" 2> /dev/null || true
+        return 0
+    fi
+
+    if cmp -s "$tmp_file" "$target_file" 2> /dev/null; then
+        log "Module config '$target_file' is unchanged" "debug"
+        rm -f "$tmp_file" 2> /dev/null || true
+    else
+        chmod 0644 "$tmp_file" 2> /dev/null || true
+        mv "$tmp_file" "$target_file" 2> /dev/null &&
+            log "Module config '$target_file' updated" ||
+            log "Failed to move module config into '$target_file'" "warn"
+        PODKOP_MODULE_CONFIG_CHANGED=1
+    fi
+
+    printf '%s\t%s\n' "$dir" "$file_name" >> "$PODKOP_MODULE_CONFIG_STAGING_FILE"
+
+    if [ -n "$render_service" ]; then
+        printf '%s\n' "$render_service" >> "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE"
+    fi
+}
+
+# Render every module-declared rule config onto disk and restart the services
+# that consume them.
+#
+# This is how a Hub module injects its own configuration: it declares
+# "actions[].config" in module.json and K.R.O.T. turns each rule's option into
+# a file at the declared path, then bounces the declared service. No backend
+# change is needed per module.
+#
+# Stale fragments are purged through a per-directory manifest
+# (${render_dir}/.krot-manifest, one rendered file name per line). Only files
+# that a previous K.R.O.T. run listed itself and that no current rule asked for
+# are deleted, so unrelated drop-ins that the user or another package placed in
+# the same directory are never touched.
+deploy_module_rule_configs() {
+    local staging_dir
+
+    # No installed module declares a rule config: nothing to do, no side
+    # effects, no runtime state to create.
+    module_config_options_declared || return 0
+
+    staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/krot-module-config.XXXXXX" 2> /dev/null)"
+    if [ -z "$staging_dir" ]; then
+        log "Failed to create a staging directory for module configs" "warn"
+        return 0
+    fi
+
+    PODKOP_MODULE_CONFIG_CHANGED=0
+    PODKOP_MODULE_CONFIG_STAGING_FILE="$staging_dir/files"
+    PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE="$staging_dir/services"
+    : > "$PODKOP_MODULE_CONFIG_STAGING_FILE"
+    : > "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE"
+
+    config_foreach collect_module_rule_config "section"
+
+    prune_module_rule_config_dirs "$staging_dir"
+    restart_module_config_services
+
+    PODKOP_MODULE_CONFIG_STAGING_FILE=""
+    PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE=""
+    rm -rf "$staging_dir"
+}
+
+# Rewrite each known manifest and drop the fragments nobody asked for.
+prune_module_rule_config_dirs() {
+    local staging_dir="$1"
+    local render_dir_file manifest_file manifest_tmp dir stale
+
+    # Distinct declared directories, independent of whether they were written
+    # in this run: when a module goes away or every rule stops using its action,
+    # the fragments it rendered must go with them.
+    render_dir_file="$staging_dir/dirs"
+    module_config_options |
+        awk -F '\t' '$6 ~ /^\// { print $6 }' |
+        sort -u > "$render_dir_file" 2> /dev/null || : > "$render_dir_file"
+
+    while read -r dir; do
+        [ -n "$dir" ] || continue
+        manifest_file="$dir/.krot-manifest"
+        manifest_tmp="$staging_dir/manifest.$(printf '%s' "$dir" | tr -cd 'A-Za-z0-9._-')"
+
+        # The new manifest: files this run rendered into this directory.
+        awk -F '\t' -v dir="$dir" '$1 == dir { print $2 }' "$PODKOP_MODULE_CONFIG_STAGING_FILE" \
+            > "$manifest_tmp" 2> /dev/null || : > "$manifest_tmp"
+
+        # Purge what an earlier K.R.O.T. run listed itself and no rule asks for
+        # anymore. Only manifest-listed names are candidates, so foreign
+        # drop-ins that the user or another package put in the directory survive.
+        if [ -f "$manifest_file" ]; then
+            while read -r stale; do
+                case "$stale" in
+                '' | /* | *..* | .*)
+                    continue
+                    ;;
+                esac
+                grep -q -x -F -- "$stale" "$manifest_tmp" 2> /dev/null && continue
+                [ -f "$dir/$stale" ] || continue
+                if rm -f "$dir/$stale" 2> /dev/null; then
+                    log "Removed stale module config '$dir/$stale'"
+                    PODKOP_MODULE_CONFIG_CHANGED=1
+                    # The consumer service still has the removed fragment loaded:
+                    # without bouncing it, a deleted rule keeps listening on the
+                    # port its config used to declare. Fragments are only ever
+                    # written for enabled rules, so the services file does not
+                    # list this directory's service anymore — re-add it here.
+                    module_config_options |
+                        awk -F '\t' -v dir="$dir" '$5 != "" && $6 == dir { print $5 }' |
+                        sort -u >> "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE" 2> /dev/null || true
+                else
+                    log "Failed to remove stale module config '$dir/$stale'" "warn"
+                fi
+            done < "$manifest_file"
+        fi
+
+        mkdir -p "$dir" 2> /dev/null || continue
+        if [ -s "$manifest_tmp" ] && cmp -s "$manifest_tmp" "$manifest_file"; then
+            log "Module config manifest in '$dir' is unchanged" "debug"
+        else
+            mv "$manifest_tmp" "$manifest_file" 2> /dev/null ||
+                log "Failed to update module config manifest in '$dir'" "warn"
+        fi
+    done < "$render_dir_file"
+}
+
+# Bring the consuming services back up after a fragment changed.
+restart_module_config_services() {
+    local service services
+
+    [ "${PODKOP_MODULE_CONFIG_CHANGED:-0}" -eq 1 ] || return 0
+    [ -n "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE" ] || return 0
+    [ -s "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE" ] || return 0
+
+    services="$(sort -u "$PODKOP_MODULE_CONFIG_STAGING_SERVICES_FILE")"
+    for service in $services; do
+        case "$service" in
+        '' | *[!A-Za-z0-9._-]*)
+            continue
+            ;;
+        esac
+
+        if [ -x "/etc/init.d/$service" ]; then
+            log "Restarting '$service' after module config changes"
+            if ! "/etc/init.d/$service" restart > /dev/null 2>&1; then
+                log "Failed to restart '$service' after module config changes" "warn"
+            fi
+        else
+            log "Module config service '$service' is not installed; fragments were rendered anyway" "debug"
+        fi
+    done
+}
+
+# Point a rule's JSON outbound at the port its own module config listens on.
+#
+# A module that declares auto_port tells K.R.O.T. that the rule's outbound port
+# is decided by the config field, not by the manifest's outbound_json template.
+# That is what lets N rules each run their own sidecar inbound on a distinct
+# port without the user editing the outbound JSON by hand. When the pattern is
+# absent the original text is kept, so a hand-edited outbound is never rewritten
+# into something the user did not write.
+apply_module_rule_auto_port() {
+    local section="$1"
+    local outbound_json="$2"
+    local meta option config_value port
+
+    meta="$(get_rule_module_config_meta "$section")" || {
+        printf '%s' "$outbound_json"
+        return 0
+    }
+
+    option="$(printf '%s' "$meta" | cut -f1)"
+    case "$(printf '%s' "$meta" | cut -f6)" in
+    true | 1 | yes | on) ;;
+    *)
+        printf '%s' "$outbound_json"
+        return 0
+        ;;
+    esac
+
+    config_get config_value "$section" "$option"
+    [ -n "$config_value" ] || {
+        printf '%s' "$outbound_json"
+        return 0
+    }
+
+    port="$(printf '%s' "$config_value" | json_utils_ucode xray-first-socks-port 2> /dev/null)"
+    case "$port" in
+    '' | *[!0-9]*)
+        printf '%s' "$outbound_json"
+        return 0
+        ;;
+    esac
+
+    printf '%s' "$outbound_json" |
+        sed -E "s/\"server_port\"[[:space:]]*:[[:space:]]*[0-9]+/\"server_port\": $port/"
+}
+
 rule_is_enabled() {
     local section="$1"
     local enabled
@@ -2722,7 +3263,7 @@ _validate_download_lists_via_proxy_section_handler() {
     fi
 
     PODKOP_VALIDATE_DOWNLOAD_SECTION_ENABLED=1
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     if [ "$action" = "proxy" ] || [ "$action" = "vpn" ] || [ "$action" = "outbound" ]; then
         PODKOP_VALIDATE_DOWNLOAD_SECTION_OUTBOUND=1
     fi
@@ -3258,7 +3799,9 @@ _check_outbound_node() {
     action="$(get_rule_action "$section")"
     config_get selector_proxy_links "$section" "selector_proxy_links"
     config_get subscription_urls "$section" "subscription_urls"
-    config_get outbound_json "$section" "outbound_json"
+    # Resolved, so a module action whose rule carries no outbound_json of its
+    # own still counts as an outbound section.
+    outbound_json="$(get_rule_outbound_json "$section")"
     config_get interface "$section" "interface"
 
     if [ "$action" = "byedpi" ] && is_byedpi_installed; then
@@ -3275,6 +3818,8 @@ _check_outbound_node() {
 has_outbound_section() {
     local section_exists=1
 
+    # Warm the Hub outbound cache once for the walk (see module_action_outbounds).
+    module_action_outbounds > /dev/null
     config_foreach _check_outbound_node "section"
 
     return $section_exists
@@ -3308,6 +3853,8 @@ start_main() {
     optimize_tcp_stack
 
     prepare_all_server_defaults
+    # Warm the Hub outbound cache once for the walk (see module_action_outbounds).
+    module_action_outbounds > /dev/null
     config_foreach process_validate_rule "section"
     validate_runtime_settings
 
@@ -3323,6 +3870,10 @@ start_main() {
         log "Subscription caches are not ready. Aborted." "fatal"
         return 1
     fi
+
+    # Render Hub module rule configs and bounce their services before sing-box
+    # starts, so a module's sidecar is listening when traffic begins flowing.
+    deploy_module_rule_configs
 
     # base
     route_table_rule_mark
@@ -3542,6 +4093,8 @@ reload() {
     config_load "$PODKOP_CONFIG_NAME"
     check_requirements
     prepare_all_server_defaults
+    # Warm the Hub outbound cache once for the walk (see module_action_outbounds).
+    module_action_outbounds > /dev/null
     config_foreach process_validate_rule "section"
     validate_runtime_settings
     ensure_runtime_dirs
@@ -3701,6 +4254,9 @@ reload() {
     fi
 
     if [ "$needs_sing_box_reload" -eq 1 ]; then
+        # Render Hub module rule configs first: the module fragment and the
+        # auto_port-adjusted outbound belong to the same reload round.
+        deploy_module_rule_configs
         sing_box_configure_service
         if [ "$needs_nft_rebuild" -eq 1 ]; then
             PODKOP_NFT_POPULATE_ENABLED=1
@@ -4092,7 +4648,9 @@ validate_outbound_json_rule() {
     local section="$1"
     local outbound_json
 
-    config_get outbound_json "$section" "outbound_json"
+    # Same resolution as at configuration time: the rule's own outbound_json,
+    # or the one the installed Hub module declares for the rule's action.
+    outbound_json="$(get_rule_outbound_json "$section")"
     if [ -z "$outbound_json" ]; then
         log "JSON outbound rule '$section' has empty outbound_json. Aborted." "fatal"
         exit 1
@@ -4120,7 +4678,7 @@ process_validate_rule() {
 
     rule_is_enabled "$section" || return 0
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     if [ -z "$action" ]; then
         log "Enabled rule '$section' has no action. Aborted." "fatal"
         exit 1
@@ -4194,6 +4752,11 @@ process_validate_rule() {
     if [ "$action" = "outbound" ]; then
         validate_outbound_json_rule "$section"
     fi
+
+    # Module-declared rule config fields (module.json -> actions[].config).
+    # Recoverable problems are logged, never fatal: one bad paste must not keep
+    # the whole router from coming up.
+    validate_module_rule_config "$section"
 
     config_list_foreach "$section" "community_lists" validate_service
     config_list_foreach "$section" "rule_set" validate_ruleset_reference
@@ -6514,6 +7077,8 @@ sing_box_configure_outbounds() {
 
     config=$(sing_box_cm_add_direct_outbound "$config" "$SB_DIRECT_OUTBOUND_TAG")
 
+    # Warm the Hub outbound cache once for the walk (see module_action_outbounds).
+    module_action_outbounds > /dev/null
     config_foreach configure_outbound_handler "section"
 }
 
@@ -8177,7 +8742,7 @@ configure_outbound_handler() {
         return 0
     fi
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
 
     if [ "$action" = "zapret" ]; then
         write_subscription_metadata_json "$section" ""
@@ -8222,11 +8787,20 @@ configure_outbound_handler() {
     if [ "$action" = "outbound" ]; then
         local outbound_json
 
-        config_get outbound_json "$section" "outbound_json"
+        # The rule's own outbound_json, or the one the installed Hub module
+        # declares for the rule's action. Both are complete sing-box outbound
+        # documents, so everything below is identical for the two sources.
+        outbound_json="$(get_rule_outbound_json "$section")"
         if [ -z "$outbound_json" ]; then
             log "JSON outbound is not set for rule '$section'. Aborted." "fatal"
             exit 1
         fi
+
+        # When the rule's module declares auto_port, the port its own config
+        # listens on overrides server_port in the outbound template. This is
+        # what lets N rules each run their own sidecar inbound on a distinct
+        # port without the user ever editing the outbound JSON by hand.
+        outbound_json="$(apply_module_rule_auto_port "$section" "$outbound_json")"
 
         config=$(sing_box_cf_add_json_outbound "$config" "$section" "$outbound_json")
         write_subscription_outbound_link_cache "$section" "{}" "{}"
@@ -8402,7 +8976,30 @@ configure_outbound_handler() {
         log "Rule '$section' has no action. Aborted." "fatal"
         ;;
     *)
-        log "Unsupported action '$action' for rule '$section'. Aborted." "fatal"
+        # A module-declared action whose manifest could not be read is a
+        # recoverable problem, not a fatal one. The manifest is fetched over the
+        # network, and K.R.O.T. brings the network up itself, so at boot the
+        # lookup can legitimately fail; taking the whole router down because one
+        # rule could not resolve its outbound would leave the user with no
+        # internet at all. The rule is skipped instead - the rest of the
+        # configuration is applied normally and the rule starts working on the
+        # next reload, once the module listing is available.
+        #
+        # get_rule_action_primitive returns the raw action id precisely when it
+        # could not resolve an outbound for it, so a non-built-in id arriving
+        # here is exactly the "module action, manifest unavailable" case.
+        case "$action" in
+        proxy | vpn | direct | block | zapret | byedpi | outbound)
+            log "Unsupported action '$action' for rule '$section': the rule has no outbound_json and no installed Hub module declares an outbound for that action. Aborted." "fatal"
+            ;;
+        *)
+            log "Rule '$section' uses the module action '$action', but its module manifest is unavailable (the Hub listing has not been fetched yet). The rule is skipped and starts working on the next reload." "error"
+            # Return before the exit below: the rule is intentionally skipped,
+            # so this handler has done its job and the rest of the walk must
+            # continue.
+            return 0
+            ;;
+        esac
         ;;
     esac
     exit 1
@@ -8515,6 +9112,8 @@ sing_box_configure_route() {
     fi
 
     config_foreach include_source_ips_in_routing_handler "section"
+    # Warm the Hub outbound cache once for the walk (see module_action_outbounds).
+    module_action_outbounds > /dev/null
     config_foreach configure_route_rule_handler "section"
     config_foreach configure_server_route "server"
 }
@@ -8558,7 +9157,7 @@ configure_server_route() {
             log "Server '$section' routing mode is section, but routing_section is empty. Aborted." "fatal"
             exit 1
         fi
-        action="$(get_rule_action "$routing_section")"
+        action="$(get_rule_action_primitive "$routing_section")"
         if [ -z "$action" ]; then
             log "Server '$section' references missing routing section '$routing_section'. Aborted." "fatal"
             exit 1
@@ -8603,8 +9202,19 @@ create_route_rule_for_action() {
         config=$(sing_box_cm_add_reject_route_rule "$config" "$rule_tag" "$inbound_tag")
         ;;
     *)
-        log "Unsupported action '$action' for rule '$section'. Aborted." "fatal"
-        exit 1
+        # Same recoverable handling as the outbound-creation path: a
+        # module-declared action whose manifest could not be read (typically at
+        # boot, before the uplink the manifest is fetched over is up) skips this
+        # one rule instead of aborting the whole configuration.
+        case "$action" in
+        proxy | vpn | direct | block | zapret | byedpi | outbound)
+            log "Unsupported action '$action' for rule '$section': the rule has no outbound_json and no installed Hub module declares an outbound for that action. Aborted." "fatal"
+            exit 1
+            ;;
+        *)
+            log "Rule '$section' uses the module action '$action', but its module manifest is unavailable (the Hub listing has not been fetched yet). The rule is skipped and starts working on the next reload." "error"
+            ;;
+        esac
         ;;
     esac
 }
@@ -8876,7 +9486,7 @@ configure_route_rule_handler() {
         return 0
     fi
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     [ -n "$action" ] || return 0
 
     if [ "$action" = "zapret" ] && ! is_zapret_installed; then
@@ -8982,7 +9592,7 @@ include_source_ips_in_routing_handler() {
     subscription_section_is_deferred "$section" && return 0
 
     local action fully_routed_ips rule_tag
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     [ -n "$action" ] || return 0
 
     if [ "$action" = "zapret" ] && ! is_zapret_installed; then
@@ -9134,7 +9744,7 @@ configure_section_mixed_proxy() {
     rule_is_enabled "$section" || return 0
     subscription_section_is_deferred "$section" && return 0
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     [ "$action" = "proxy" ] || [ "$action" = "outbound" ] || [ "$action" = "vpn" ] || [ "$action" = "byedpi" ] || [ "$action" = "zapret" ] || return 0
     if [ "$action" = "byedpi" ] && ! is_byedpi_installed; then
         return 0
@@ -9678,7 +10288,7 @@ _determine_first_outbound_section() {
     rule_is_enabled "$section" || return 0
     subscription_section_is_deferred "$section" && return 0
 
-    action="$(get_rule_action "$section")"
+    action="$(get_rule_action_primitive "$section")"
     if [ "$action" = "proxy" ] || [ "$action" = "outbound" ] || [ "$action" = "vpn" ] || { [ "$action" = "byedpi" ] && is_byedpi_installed; }; then
         [ -z "$first_section" ] && first_section="$1"
     fi
@@ -10404,6 +11014,48 @@ show_config() {
         -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
         "$PODKOP_CONFIG" > "$tmp_config"
 
+    # Hub modules declare their own rule config fields (module.json ->
+    # actions[].config). They can carry keys and server addresses just like
+    # outbound_json does, so mask them the same way. The option names come from
+    # the module catalog, which is why this is a loop instead of one more
+    # static -e above.
+    #
+    # An awk state machine is used rather than a sed range: a UCI option can be
+    # written as a single line (option x '...') — which a /start/,/end/ range
+    # never masks — or as a multi-line value whose closing quote sits alone on
+    # the last line. Mask the option line, then skip the rest of a multi-line
+    # value until the line that ends the quote.
+    local module_option masked_config
+    while read -r module_option; do
+        case "$module_option" in
+        '' | *[!A-Za-z0-9_-]*)
+            continue
+            ;;
+        esac
+        masked_config="$(mktemp)"
+        if awk -v key="	option $module_option " -v q="'" '
+                !skipping && index($0, key) == 1 {
+                    print key q "MASKED" q
+                    if ($0 !~ q "$")
+                        skipping = 1
+                    next
+                }
+                skipping {
+                    if ($0 ~ q "$")
+                        skipping = 0
+                    next
+                }
+                { print }
+            ' "$tmp_config" > "$masked_config" 2> /dev/null; then
+            mv "$masked_config" "$tmp_config"
+        else
+            log "Failed to mask module config option '$module_option' in exported config" "debug"
+            rm -f "$masked_config"
+        fi
+    done <<EOF
+$(module_config_option_names)
+EOF
+
     cat "$tmp_config"
     rm -f "$tmp_config"
 }
@@ -10557,9 +11209,20 @@ get_cached_podkop_latest_version() {
 }
 
 get_luci_app_version() {
+    # Try PODKOP_LUCI_APP_VERSION first (legacy), then Yo (compiled version)
     if [ -f "$PODKOP_LUCI_VIEW_DIR/main.js" ]; then
-        grep 'var PODKOP_LUCI_APP_VERSION' "$PODKOP_LUCI_VIEW_DIR/main.js" | cut -d'"' -f2
-        return 0
+        local version
+        version="$(grep 'var PODKOP_LUCI_APP_VERSION' "$PODKOP_LUCI_VIEW_DIR/main.js" 2>/dev/null | cut -d'"' -f2)"
+        if [ -n "$version" ]; then
+            echo "$version"
+            return 0
+        fi
+        # Fallback to compiled version variable
+        version="$(grep 'Yo="' "$PODKOP_LUCI_VIEW_DIR/main.js" 2>/dev/null | head -1 | sed 's/.*Yo="\([^"]*\)".*/\1/')"
+        if [ -n "$version" ] && [ "$version" != "__COMPILED_VERSION_VARIABLE__" ]; then
+            echo "$version"
+            return 0
+        fi
     fi
 
     echo "not installed"
@@ -10609,6 +11272,9 @@ build_system_info() {
     is_sing_box_extended "$sing_box_version" && sing_box_extended=1
 
     zapret_installed=0
+    # is_zapret_installed checks for the provider binary, which may come from
+    # either the classic zapret package or the zapret2 module — both satisfy
+    # the action=zapret requirement for rules.
     if is_zapret_installed; then
         zapret_installed=1
         zapret_version="$(get_zapret_package_version)"
@@ -10873,6 +11539,91 @@ validate_nfqws_strategy_json() {
     fi
 
     json_utils_ucode nfqws-strategy-validation false "$NFQWS_VALIDATE_ERROR" "$NFQWS_VALIDATE_NEEDLE" "$NFQWS_VALIDATE_NEEDLES"
+}
+
+# Validate a module-declared rule config field value against its format.
+# Prints the same {valid,message,...} envelope as validate_nfqws_strategy_json
+# so the LuCI validateOutboundJson-style helpers keep working.
+validate_module_config_json() {
+    local format="${1:-none}"
+    local config_value="${2:-}"
+    local message=""
+
+    local valid=true
+
+    case "$format" in
+    none)
+        ;;
+    json)
+        if [ -n "$config_value" ] &&
+            ! printf '%s' "$config_value" | json_utils_ucode valid-json > /dev/null 2>&1; then
+            valid=false
+            message="Invalid JSON format"
+        fi
+        ;;
+    xray)
+        # An empty config field is allowed: the rule then only uses its plain
+        # outbound_json, same convention as validate_module_rule_config.
+        if [ -n "$config_value" ] &&
+            ! printf '%s' "$config_value" | json_utils_ucode valid-xray-config > /dev/null 2>&1; then
+            valid=false
+            message="Invalid Xray config: expected a JSON object with a top-level 'inbounds' array"
+        fi
+        ;;
+    *)
+        valid=false
+        message="Unknown config format '$format'"
+        ;;
+    esac
+
+    json_utils_ucode object-json valid b "$valid" message s "$message"
+}
+
+# Serve the config template a module declares for an action so the LuCI rule
+# editor can pre-fill the field. Reads the Hub module cache when present and
+# falls back to a live hub_get_modules; a missing module is reported, not fatal.
+get_module_config_template() {
+    local module_id="${1:-}"
+    local action_id="${2:-}"
+    local cache_file="/tmp/krot-hub-modules.json"
+    local modules_file
+
+    case "$module_id" in
+    '' | *[!A-Za-z0-9_-]*)
+        json_utils_ucode object-json success b false data s "" message s "Invalid module id"
+        return 0
+        ;;
+    esac
+    case "$action_id" in
+    '' | *[!A-Za-z0-9_-]*)
+        json_utils_ucode object-json success b false data s "" message s "Invalid action id"
+        return 0
+        ;;
+    esac
+
+    modules_file="$(mktemp 2> /dev/null)" || return 1
+    if [ -s "$cache_file" ] && json_utils_ucode file-json-valid "$cache_file" > /dev/null 2>&1; then
+        cp "$cache_file" "$modules_file" 2> /dev/null || true
+    elif command -v hub_get_modules > /dev/null 2>&1; then
+        # hub_guarded_call: this CLI path installs no EXIT cleanup, so it has to
+        # remove the /tmp/krot-updates.* directory it creates.
+        hub_guarded_call hub_get_modules 2> /dev/null > "$modules_file" || true
+    fi
+
+    if [ ! -s "$modules_file" ]; then
+        json_utils_ucode object-json success b false data s "" message s "Hub module catalog is not available"
+        rm -f "$modules_file"
+        return 0
+    fi
+
+    local template
+    if template="$(json_utils_ucode module-config-template "$modules_file" "$module_id" "$action_id" 2> /dev/null)"; then
+        json_utils_ucode object-json success b true data s "$template"
+    else
+        json_utils_ucode object-json success b false data s "" \
+            message s "Module action '$module_id:$action_id' declares no config template"
+    fi
+    rm -f "$modules_file"
 }
 
 check_dns_available() {
@@ -12007,6 +12758,10 @@ Available commands:
                             Validate an NFQWS strategy and print JSON result
     validate_byedpi_strategy_json
                             Validate a ByeDPI ciadpi strategy and print JSON result
+    validate_module_config_json
+                            Validate a Hub module rule config (<format> <json>) and print JSON result
+    get_module_config_template
+                            Print the config template declared by a Hub module (<module_id> <action_id>)
 EOF
 }
 
@@ -12151,7 +12906,11 @@ hub_get_modules)
     # resolves {{router_ip}} in web_url, injects installed/installed_version,
     # and respects the proxy settings. Calling the function directly keeps
     # the case statement below aligned with the rest of the Hub code.
-    hub_get_modules
+    #
+    # hub_guarded_call() removes the /tmp/krot-updates.XXXXXX working directory
+    # this path creates: unlike `component_action`, a plain CLI call installs no
+    # EXIT cleanup, and LuCI runs it every time a rule editor opens.
+    hub_guarded_call hub_get_modules
     ;;
 check_dns_available)
     check_dns_available
@@ -12164,6 +12923,12 @@ validate_nfqws_strategy_json)
     ;;
 validate_byedpi_strategy_json)
     validate_byedpi_strategy_json "${2:-}"
+    ;;
+validate_module_config_json)
+    validate_module_config_json "${2:-none}" "${3:-}"
+    ;;
+get_module_config_template)
+    get_module_config_template "${2:-}" "${3:-}"
     ;;
 *)
     show_help
