@@ -1,0 +1,12 @@
+{
+  "id": "zapret2",
+  "name": "Zapret2",
+  "description": "Next-generation anti-DPI tool (nfqws2) by bol-van. Runs at the network level, no proxy server required. Installs the nfqws2 binary where K.R.O.T. expects its DPI bypass provider (/opt/zapret), plus the fake-payload library the default strategies reference.",
+  "category": "dpi-bypass",
+  "author": "bol-van",
+  "project_url": "https://github.com/bol-van/zapret2",
+  "component": "zapret2",
+  "repo": "titovcode/krot",
+  "version": "1.0.5.2",
+  "install_script": "hub/zapret2/install.sh"
+}
