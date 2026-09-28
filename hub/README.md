@@ -2,16 +2,24 @@
 
 Third-party developers can create modules for K.R.O.T. and publish them via GitHub.
 
+## Quick Start
+
+1. **Copy the template**: Use `hub/_template/` as a starting point for your module
+2. **Read the full guide**: See [MODULE_DEVELOPMENT.md](MODULE_DEVELOPMENT.md) for detailed documentation
+3. **Study the reference**: `hub/xray/` is a complete, production-ready example
+
 ## How it works
 
 1. Create a GitHub repo with the following structure:
    ```
    hub/
      your-module/
-       module.json    # Module metadata
+       module.json    # Module metadata (required)
        install.sh     # Install script (required)
        remove.sh      # Remove script (optional)
        update.sh      # Update script (optional)
+       config.template.json  # Config template (optional)
+       files/         # Additional files (optional)
    ```
 
 2. Add your repo as a Hub source in K.R.O.T. → Hub → "Add source"
@@ -105,6 +113,15 @@ Behaviour:
 - Selecting it stores `action = <id>` and copies `outbound_json` onto the rule.
   K.R.O.T. then routes it through its existing JSON-outbound primitive, so no
   K.R.O.T. backend change is required per module.
+- The copy is a snapshot, not a requirement: when a rule has no `outbound_json`
+  of its own, K.R.O.T. resolves the document from the installed module that
+  declares the action. A rule written through the CLI, restored from a backup,
+  or saved by a release whose UI did not copy the template therefore keeps
+  working without anyone editing UCI by hand. A rule's own `outbound_json`
+  always wins over the module's declaration.
+- An action id that no installed module declares and that carries no
+  `outbound_json` stays a hard error (K.R.O.T. cannot know where to send the
+  traffic), and the log names both missing pieces.
 - Built-in actions keep working exactly as before.
 
 ## Module config fields (`actions[].config`)

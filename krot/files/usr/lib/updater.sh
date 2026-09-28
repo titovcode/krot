@@ -2933,6 +2933,39 @@ hub_install_module() {
     updates_success "hub" "hub_install_${module_id}" "${module_id} has been installed" "" "$installed_version" 1 "latest"
 }
 
+# Disable all rules that use a given action. Called when a module is removed
+# so the router does not keep failing on rules that reference a now-missing
+# action. Sets enabled='0' for every rule with the matching action.
+hub_disable_rules_with_action() {
+    local target_action="$1"
+    local section action enabled changed=0
+
+    [ -n "$target_action" ] || return 0
+
+    # Load UCI config if not already loaded
+    config_load krot 2>/dev/null || return 0
+
+    # Iterate over all sections
+    local section
+    for section in $(uci -q show krot | grep "=section" | cut -d. -f2 | cut -d= -f1); do
+        action="$(uci -q get "krot.${section}.action" 2>/dev/null || true)"
+        enabled="$(uci -q get "krot.${section}.enabled" 2>/dev/null || echo '0')"
+        
+        if [ "$action" = "$target_action" ] && [ "$enabled" = "1" ]; then
+            updates_log "Disabling rule '${section}' (action '${target_action}' no longer available)"
+            uci -q set "krot.${section}.enabled=0" 2>/dev/null || true
+            changed=1
+        fi
+    done
+
+    if [ "$changed" -eq 1 ]; then
+        uci -q commit krot 2>/dev/null || true
+        updates_log "Disabled rules using action '${target_action}'"
+    fi
+
+    return 0
+}
+
 hub_remove_module() {
     local module_id="$1"
     local pkg_name=""
@@ -2992,6 +3025,15 @@ hub_remove_module() {
             return
         fi
 
+        # Disable any rules using actions declared by this module
+        if [ -s "$tmp_module_json" ]; then
+            local module_actions
+            module_actions="$(grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | sed 's/.*"id"[[:space:]]*:[[:space:]]*"//;s/"$//' | grep -v "^${module_id}$" || true)"
+            for action_id in $module_actions; do
+                [ -n "$action_id" ] && hub_disable_rules_with_action "$action_id"
+            done
+        fi
+
         # Restart K.R.O.T. to pick up the changed UCI state. Use restart
         # (not just reload) — the install/remove script may have flipped
         # dns_server / dns_type, and sing-box needs to fully rebuild.
@@ -3026,6 +3068,8 @@ hub_remove_module() {
             pkill -f "/opt/zapret/nfq/nfqws" 2>/dev/null || true
             rm -rf /opt/zapret
             rm -rf /var/run/krot/zapret /tmp/krot/zapret 2>/dev/null || true
+            # Disable any rules still using the zapret action
+            hub_disable_rules_with_action "zapret"
             # Restart K.R.O.T. to clean up nft rules
             if [ -x /etc/init.d/krot ]; then
                 updates_log "Restarting K.R.O.T. after zapret2 removal"

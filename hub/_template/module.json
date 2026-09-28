@@ -1,0 +1,38 @@
+{
+  "id": "_template",
+  "name": "Module Template",
+  "description": "A template for creating new K.R.O.T. Hub modules. Copy this directory and rename it to your module id.",
+  "category": "tunnel",
+  "author": "Your Name",
+  "project_url": "https://github.com/yourusername/your-project",
+  "component": "_template",
+  "repo": "yourusername/your-repo",
+  "version": "1.0.0",
+  "actions": [
+    {
+      "id": "_template",
+      "label": "Template — Template Action",
+      "description": "Example action that routes traffic through your module.",
+      "outbound_json": {
+        "type": "socks",
+        "server": "127.0.0.1",
+        "server_port": 10808,
+        "version": "5"
+      },
+      "config": {
+        "option": "_template_json",
+        "label": "Template JSON",
+        "description": "Complete configuration for this rule.",
+        "format": "json",
+        "template": "hub/_template/config.template.json",
+        "render_path": "/etc/_template/conf.d/${section}.json",
+        "render_service": "_template",
+        "render_dir": "/etc/_template/conf.d",
+        "auto_port": true
+      }
+    }
+  ],
+  "install_script": "hub/_template/install.sh",
+  "update_script": "hub/_template/update.sh",
+  "remove_script": "hub/_template/remove.sh"
+}
