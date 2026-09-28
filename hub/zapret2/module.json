@@ -8,5 +8,6 @@
   "component": "zapret2",
   "repo": "titovcode/krot",
   "version": "1.0.5.2",
-  "install_script": "hub/zapret2/install.sh"
+  "install_script": "hub/zapret2/install.sh",
+  "remove_script": "hub/zapret2/remove.sh"
 }

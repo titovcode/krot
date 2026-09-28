@@ -1,5 +1,12 @@
 # shellcheck shell=ash
 
+# Hub listing cache. hub_get_modules() performs one HTTPS request per module
+# and LuCI rebuilds the module list (with every config template) on each page
+# view, so an uncached listing is seconds of "Loading view..." on a router.
+# hub_refresh_modules_cache() rewrites it after install/remove.
+HUB_CACHE_FILE="/tmp/krot-hub-modules.json"
+HUB_CACHE_MAX_AGE=3600
+
 UPDATES_TMP_DIR=""
 UPDATES_TARGET_ARCH=""
 UPDATES_ARCH_CANDIDATES=""
@@ -73,6 +80,38 @@ updates_init_tmp_dir() {
 
 updates_cleanup() {
     [ -n "$UPDATES_TMP_DIR" ] && rm -rf "$UPDATES_TMP_DIR"
+}
+
+# Run a command and remove $UPDATES_TMP_DIR afterwards, but only when this
+# call is the one that created it.
+#
+# updates_init_tmp_dir() creates the directory lazily and nothing removes it
+# except the trap installed by component_action(). Every other entry point
+# that reaches the Hub code (the `krot hub_get_modules` CLI alias used by
+# LuCI, the module-config lookup in the daemon start/reload path) leaves a
+# /tmp/krot-updates.XXXXXX directory behind per call, which is an unbounded
+# leak on tmpfs. Wrapping the call here keeps those paths clean.
+#
+# The trap in component_action() is deliberately left alone: wrapping it here
+# instead would let a Hub read clobber the daemon's own EXIT trap
+# (start_failure_cleanup) and release the component-action lock early.
+#
+# Nesting is safe: an inner call only cleans a directory it created itself, and
+# UPDATES_TMP_DIR is reset to "" so a later lazy init starts fresh.
+hub_guarded_call() {
+    local created_here status
+
+    [ -n "$UPDATES_TMP_DIR" ] || created_here=1
+
+    "$@"
+    status=$?
+
+    if [ -n "$created_here" ] && [ -n "$UPDATES_TMP_DIR" ]; then
+        rm -rf "$UPDATES_TMP_DIR" 2> /dev/null || true
+        UPDATES_TMP_DIR=""
+    fi
+
+    return "$status"
 }
 
 updates_acquire_component_lock() {
@@ -1796,6 +1835,12 @@ component_action() {
     hub:get_modules)
         hub_get_modules
         ;;
+    hub:module_config_options)
+        hub_module_config_options
+        ;;
+    hub:module_action_outbounds)
+        hub_module_action_outbounds
+        ;;
     hub:hub_install_*)
         module_id="${action#hub_install_}"
         # Check if this module has a custom source registered
@@ -1825,8 +1870,21 @@ hub_detect_installed_version() {
     [ -n "$component" ] || return 0
     case "$component" in
         zapret)
-            [ -f /opt/zapret/VERSION ] && { head -n 1 /opt/zapret/VERSION 2>/dev/null; return 0; }
+            # The classic zapret package version comes from the package manager
+            # only — the zapret2 provider installs to the same path but is a
+            # different product with its own versioning.
             get_zapret_package_version 2>/dev/null
+            ;;
+        zapret2)
+            # The zapret2 installer records the upstream release tag; fall back to
+            # the provider binary so a hand-placed provider is still detected.
+            [ -f /opt/zapret/VERSION.embedded ] && { head -n 1 /opt/zapret/VERSION.embedded 2>/dev/null; return 0; }
+            # No embedded marker — query the binary directly so a manual
+            # nfqws2 placement is still reported with its own version, not the
+            # classic zapret package version.
+            is_zapret_provider_available && {
+                "$ZAPRET_PROVIDER_NFQWS_BIN" --version 2>/dev/null | sed -n '1s/^.*version[[:space:]]*//p' | awk '{print $1; exit}'
+            }
             ;;
         byedpi)
             [ -f /opt/byedpi/VERSION ] && { head -n 1 /opt/byedpi/VERSION 2>/dev/null; return 0; }
@@ -1860,8 +1918,24 @@ hub_module_installed_status() {
     hub_installed_version=""
     case "$component" in
         zapret)
-            is_zapret_installed || return 1
+            # Only the classic zapret package counts for this module — the
+            # zapret2 provider installs to the same /opt/zapret path but is a
+            # different product with its own versioning.
+            zapret_package_installed || return 1
             hub_installed_version="$(get_zapret_package_version 2>/dev/null || true)"
+            ;;
+        zapret2)
+            # Zapret2 records its upstream release tag in VERSION.embedded at
+            # install time. Fall back to the live binary only when the marker
+            # file is missing (hand-placed provider).
+            is_zapret_provider_available || return 1
+            hub_installed_version="$(head -n 1 /opt/zapret/VERSION.embedded 2>/dev/null || true)"
+            [ -n "$hub_installed_version" ] || {
+                # No embedded marker — query the binary directly so a manual
+                # nfqws2 placement is still reported with its own version,
+                # not the classic zapret package version.
+                hub_installed_version="$("$ZAPRET_PROVIDER_NFQWS_BIN" --version 2>/dev/null | sed -n '1s/^.*version[[:space:]]*//p' | awk '{print $1; exit}')"
+            }
             ;;
         byedpi)
             is_byedpi_installed || return 1
@@ -1944,12 +2018,254 @@ get_xray_version() {
     [ -x /usr/bin/xray ] && /usr/bin/xray version 2>/dev/null | head -1 | awk '{print $2}' || echo "installed"
 }
 
+# Path of the generated generic Hub manifest helper (ucode). K.R.O.T. is a
+# wrapper: a Hub module declares everything about itself in module.json, and
+# this helper only reshapes that declaration (embed a declared config template,
+# list declared render targets). It knows no module ids and contains no
+# per-module code, so a new module needs no backend change. The script lives in
+# the updates temp dir instead of json_utils.uc so the Hub logic stays with the
+# Hub engine; it is generated once per process and reused for every module.
+hub_modules_ucode_script() {
+    local script_path
+
+    updates_init_tmp_dir || return 1
+    script_path="$UPDATES_TMP_DIR/hub-modules.uc"
+    [ -s "$script_path" ] && { printf '%s\n' "$script_path"; return 0; }
+
+    cat > "$script_path" <<'HUB_MODULES_UCODE'
+#!/usr/bin/env ucode
+
+let fs = require("fs");
+
+function as_string(value) {
+    return value == null ? "" : "" + value;
+}
+
+function array_or_empty(value) {
+    return type(value) == "array" ? value : [];
+}
+
+function object_or_empty(value) {
+    return type(value) == "object" ? value : {};
+}
+
+function read_text(path) {
+    let data = fs.readfile(path);
+    return data == null ? "" : data;
+}
+
+function read_json_file(path) {
+    let data = read_text(path);
+    if (data == "")
+        return null;
+
+    try {
+        return json(data);
+    }
+    catch (e) {
+        return null;
+    }
+}
+
+function is_true(value) {
+    return value === true || as_string(value) == "true" || value == 1;
+}
+
+// Drop the file's trailing newline(s) so an embedded template does not carry
+// them into the UCI value the UI prefills from it.
+function rstrip_newlines(text) {
+    while (length(text) > 0) {
+        let last = substr(text, length(text) - 1, 1);
+        if (last != "\n" && last != "\r")
+            break;
+        text = substr(text, 0, length(text) - 1);
+    }
+    return text;
+}
+
+function module_actions(module) {
+    return array_or_empty(module.actions);
+}
+
+let mode = ARGV[0] || "";
+
+// list-templates <module_json_path>
+// Prints the repo-relative template paths declared by this module, one per
+// line, so the caller knows what to download. Nothing declared -> no output.
+if (mode == "list-templates") {
+    let module = read_json_file(ARGV[1]);
+    if (type(module) != "object")
+        exit(1);
+
+    for (let action in module_actions(module)) {
+        if (type(action) != "object")
+            continue;
+
+        let template = as_string(object_or_empty(action.config).template || "");
+        if (template != "")
+            print(template, "\n");
+    }
+
+    exit(0);
+}
+
+// inject-template <module_json_path> [<repo_template_path>=<local_file> ...]
+// Embeds every downloaded template file into its declaring
+// actions[].config.template_text. sprintf("%J") does the JSON escaping
+// (backslashes, quotes, newlines, tabs, control chars), so the emitted object
+// is always valid JSON; the caller keeps its own string if we exit non-zero.
+if (mode == "inject-template") {
+    let module = read_json_file(ARGV[1]);
+    if (type(module) != "object")
+        exit(1);
+
+    let texts = {};
+    let found = false;
+
+    for (let i = 2; i < length(ARGV); i++) {
+        let arg = as_string(ARGV[i]);
+        let sep = index(arg, "=");
+        if (sep < 0)
+            continue;
+
+        let text = rstrip_newlines(read_text(substr(arg, sep + 1)));
+        if (text != "") {
+            texts[substr(arg, 0, sep)] = text;
+            found = true;
+        }
+    }
+
+    if (!found)
+        exit(1);
+
+    for (let action in module_actions(module)) {
+        if (type(action) != "object")
+            continue;
+
+        let config = object_or_empty(action.config);
+        let template = as_string(config.template || "");
+        if (template != "" && texts[template] != null) {
+            config.template_text = texts[template];
+            action.config = config;
+        }
+    }
+
+    print(sprintf("%J", module), "\n");
+    exit(0);
+}
+
+// usable_outbound <declared outbound_json>
+// The sing-box outbound an action contributes, compacted to one line, or null
+// when the declaration is unusable. Mirrors json_utils.uc valid-outbound: the
+// document must be a JSON object carrying a non-empty "type" string, so the
+// backend never receives a template it would have to reject at runtime. Both
+// declared shapes are accepted — an object, or a string holding that object.
+function usable_outbound(declared) {
+    let value = declared;
+
+    if (type(value) == "string") {
+        if (value == "")
+            return null;
+
+        try {
+            value = json(value);
+        }
+        catch (e) {
+            return null;
+        }
+    }
+
+    if (type(value) != "object" || type(value.type) != "string" || value.type == "")
+        return null;
+
+    return sprintf("%J", value);
+}
+
+// action-outbounds <modules_json_path>
+// One TAB-separated row per rule action contributed by an installed module:
+// action_id, outbound_json. This is what lets a rule that carries no
+// outbound_json of its own still be routed through the JSON-outbound
+// primitive: the module that declares the action is the only source of truth
+// for the outbound, and K.R.O.T. stays a wrapper with no module knowledge.
+// Actions whose declaration is unusable (see usable_outbound) are skipped.
+if (mode == "action-outbounds") {
+    for (let module in array_or_empty(read_json_file(ARGV[1]))) {
+        if (type(module) != "object" || !is_true(module.installed))
+            continue;
+
+        for (let action in array_or_empty(module.actions)) {
+            if (type(action) != "object")
+                continue;
+
+            let action_id = as_string(action.id || "");
+            if (action_id == "")
+                continue;
+
+            let outbound = usable_outbound(action.outbound_json);
+            if (outbound != null)
+                print(action_id, "\t", outbound, "\n");
+        }
+    }
+
+    exit(0);
+}
+
+// config-options <modules_json_path>
+// One TAB-separated row per config declared by an installed module:
+// module_id, action_id, option, render_path, render_service, render_dir,
+// format, auto_port. Missing values print as empty fields so the column count
+// is always 8.
+if (mode == "config-options") {
+    for (let module in array_or_empty(read_json_file(ARGV[1]))) {
+        if (type(module) != "object" || !is_true(module.installed))
+            continue;
+
+        let module_id = as_string(module.id || "");
+        if (module_id == "")
+            continue;
+
+        for (let action in array_or_empty(module.actions)) {
+            if (type(action) != "object")
+                continue;
+
+            let config = object_or_empty(action.config);
+            let option = as_string(config.option || "");
+            if (option == "")
+                continue;
+
+            print(module_id, "\t", as_string(action.id || ""), "\t", option, "\t",
+                  as_string(config.render_path || ""), "\t", as_string(config.render_service || ""), "\t",
+                  as_string(config.render_dir || ""), "\t", as_string(config.format || "none"), "\t",
+                  is_true(config.auto_port) ? "true" : "false", "\n");
+        }
+    }
+
+    exit(0);
+}
+
+warn("Usage: hub-modules.uc <inject-template|action-outbounds|config-options> ...\n");
+exit(1);
+HUB_MODULES_UCODE
+
+    printf '%s\n' "$script_path"
+}
+
 hub_get_modules() {
     local hub_repo="${PODKOP_RELEASE_REPO:-titovcode/krot}"
     local _cache_ts; _cache_ts="$(date +%s)"
     local index_url="https://raw.githubusercontent.com/${hub_repo}/main/hub/index.json?v=${_cache_ts}"
     local tmp_index tmp_module module_ids module_id module_json_url
     local module_json module_component installed installed_version installed_version_escaped installed_json module_manifest_version latest_version_escaped first=1 result="["
+    local injected_json cached
+
+    # Serve the recent listing when one exists: this function performs one
+    # HTTPS request per module, and LuCI calls it on every page build. Set
+    # KROT_HUB_CACHE_TTL=0 to force a fresh fetch (the Modules tab does that
+    # through hub_refresh_modules_cache).
+    if [ "$HUB_CACHE_MAX_AGE" -gt 0 ] && cached="$(hub_cache_read)"; then
+        printf '%s\n' "$cached"
+        return 0
+    fi
 
     updates_init_tmp_dir || { echo "[]"; return 1; }
     tmp_index="$UPDATES_TMP_DIR/hub-index.json"
@@ -2065,6 +2381,15 @@ hub_get_modules() {
                     ;;
             esac
             module_json="${body}${installed_json}}"
+
+            # Embed the config templates this module declares
+            # (actions[].config.template -> actions[].config.template_text) so
+            # the rule editor can prefill a module-provided option. Best
+            # effort: a module with no declared template, an offline router or
+            # a missing helper keeps the manifest exactly as it was above.
+            injected_json="$(hub_embed_module_templates "$hub_repo" "$_cache_ts" "$module_id" "$module_json" 2>/dev/null || true)"
+            [ -n "$injected_json" ] && module_json="$injected_json"
+
             result="${result}${module_json}"
             first=0
         fi
@@ -2072,16 +2397,292 @@ hub_get_modules() {
 
     result="${result}]"
     echo "$result"
+
+    # Remember the fresh listing so the next caller (LuCI rebuilds the module
+    # list on every page view) does not repeat the downloads.
+    hub_cache_write "$result"
+}
+
+# Where the Hub listing is cached between calls, and how long it stays valid.
+# The LuCI rule editor asks for the module list each time the page is built, so
+# an uncached listing means one HTTPS request per module — seconds of
+# "Loading view..." on a router.
+hub_cache_write() {
+    [ -n "$1" ] || return 0
+    # Never cache an empty listing. "[]" is what a failed index fetch produces
+    # (see hub_get_modules), and K.R.O.T. reaches the network through itself, so
+    # at boot the request legitimately fails before the uplink is up. Caching
+    # that failure for HUB_CACHE_MAX_AGE hides every Hub module for an hour -
+    # and a rule whose action is provided by a module then has no outbound to
+    # resolve, which used to take the whole service down.
+    case "$1" in
+    "[]") return 0 ;;
+    esac
+    printf '%s\n' "$1" > "$HUB_CACHE_FILE" 2> /dev/null || true
+}
+
+# Echo the cached listing when it is still fresh, otherwise nothing. Cache
+# entries older than HUB_CACHE_MAX_AGE are treated as absent so a module
+# published upstream still shows up after the window; the Modules tab's
+# explicit refresh calls hub_refresh_modules_cache(), which bypasses this.
+hub_cache_read() {
+    local age now
+
+    [ -s "$HUB_CACHE_FILE" ] || return 1
+
+    now="$(date +%s)"
+    age="$((now - $(hub_cache_mtime)))"
+    [ "$age" -ge 0 ] && [ "$age" -lt "$HUB_CACHE_MAX_AGE" ] || return 1
+
+    cat "$HUB_CACHE_FILE"
+}
+
+hub_cache_mtime() {
+    date -r "$HUB_CACHE_FILE" +%s 2> /dev/null || echo 0
 }
 
 hub_refresh_modules_cache() {
-    # Regenerate /tmp/krot-hub-modules.json after a module install/remove
-    # so LuCI's Modules tab shows the new state without forcing a full update.
-    local cache_file="/tmp/krot-hub-modules.json"
+    # Regenerate the Hub listing after a module install/remove so LuCI's
+    # Modules tab shows the new state without forcing a full update.
+    # Because it delegates to hub_get_modules, the cache carries the injected
+    # actions[].config.template_text as well — that is what lets a render
+    # lookup reuse the cache instead of refetching every template.
+    #
+    # The read cache is disabled for this call: a refresh exists precisely to
+    # bypass it.
     local modules_json
+
+    HUB_CACHE_MAX_AGE=0
     modules_json="$(hub_get_modules 2>/dev/null)" || return 0
+    HUB_CACHE_MAX_AGE=3600
     [ -n "$modules_json" ] || return 0
-    printf '%s\n' "$modules_json" > "$cache_file" 2>/dev/null || true
+    hub_cache_write "$modules_json"
+}
+
+# Download the config templates declared by one module manifest
+# (actions[].config.template) and merge them into that manifest as
+# actions[].config.template_text. The rewritten module object goes to stdout.
+# Returns 1 without output when the module declares no template, the download
+# fails or ucode is unavailable; the caller then keeps the manifest untouched,
+# so a template problem can never break the Hub listing.
+hub_embed_module_templates() {
+    local hub_repo="$1"
+    local cache_ts="$2"
+    local module_id="$3"
+    local module_json="$4"
+    local helper manifest_file template_paths template_path template_file
+    local template_url inject_args="" injected_json template_index=0
+
+    helper="$(hub_modules_ucode_script)" || return 1
+    updates_command_exists ucode || return 1
+
+    manifest_file="$UPDATES_TMP_DIR/hub-${module_id}-inject.json"
+    printf '%s' "$module_json" > "$manifest_file" 2>/dev/null || return 1
+
+    template_paths="$(ucode "$helper" list-templates "$manifest_file" 2>/dev/null)" || return 1
+    [ -n "$template_paths" ] || return 1
+
+    for template_path in $template_paths; do
+        # Only a plain repo-relative path below hub/ may be fetched, and the
+        # path is interpolated into a raw.githubusercontent.com URL, so reject
+        # anything outside the documented charset.
+        case "$template_path" in
+            hub/*)
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        case "$template_path" in
+            *[!A-Za-z0-9._/-]*)
+                continue
+                ;;
+        esac
+
+        template_file="$UPDATES_TMP_DIR/hub-${module_id}-template-${template_index}.json"
+        template_index=$((template_index + 1))
+        template_url="https://raw.githubusercontent.com/${hub_repo}/main/${template_path}?v=${cache_ts}"
+
+        # A template that cannot be fetched is simply not injected.
+        updates_http_get "$template_url" > "$template_file" 2>/dev/null || {
+            rm -f "$template_file"
+            continue
+        }
+        [ -s "$template_file" ] || {
+            rm -f "$template_file"
+            continue
+        }
+
+        # Unquoted on purpose: the charset above guarantees the accumulated
+        # "<path>=<file>" tokens contain no whitespace to split on.
+        inject_args="${inject_args} ${template_path}=${template_file}"
+    done
+
+    [ -n "$inject_args" ] || return 1
+
+    # ucode is not built with shell trace checking, so the tokens are passed
+    # unquoted by design (see the comment above).
+    # shellcheck disable=SC2086
+    injected_json="$(ucode "$helper" inject-template "$manifest_file" $inject_args 2>/dev/null | tr -d '\n\r\t')" || return 1
+    [ -n "$injected_json" ] || return 1
+
+    updates_log "Embedded hub config templates for ${module_id}" "debug"
+    printf '%s\n' "$injected_json"
+}
+
+# List the module-provided config declarations of the installed Hub modules,
+# one TAB-separated row per declaration:
+#   module_id  action_id  option  render_path  render_service  render_dir  format  auto_port
+# K.R.O.T. stays a wrapper: nothing here knows any module — the rows are read
+# straight from what each module.json declares (via the generic helper), and
+# the caller (/usr/bin/krot) uses them to find the render target for a rule
+# option. An absent render_service init script is not checked; the declaration
+# is reported as-is. Reads the /tmp cache written by hub_refresh_modules_cache
+# and falls back to a fresh hub_get_modules listing when it is missing.
+#
+# This is also reached from entry points that install no EXIT cleanup (the
+# daemon's show_config/reload paths after `start()` has cleared its trap, and
+# `krot get_module_config_template`), so it guards its own working directory.
+# Inside component_action() the directory already exists, and hub_guarded_call
+# then leaves it for that trap to remove.
+hub_module_config_options() {
+    hub_guarded_call _hub_module_config_options "$@"
+}
+
+_hub_module_config_options() {
+    local cache_file="${1:-/tmp/krot-hub-modules.json}"
+    local helper
+
+    if [ ! -s "$cache_file" ]; then
+        # hub_refresh_modules_cache always writes the standard path, so a
+        # caller-provided cache is regenerated directly.
+        if [ "$cache_file" = "/tmp/krot-hub-modules.json" ]; then
+            hub_refresh_modules_cache
+        else
+            hub_get_modules > "$cache_file" 2>/dev/null || true
+        fi
+    fi
+    [ -s "$cache_file" ] || return 0
+
+    helper="$(hub_modules_ucode_script)" || return 0
+    updates_command_exists ucode || return 0
+
+    ucode "$helper" config-options "$cache_file" 2>/dev/null || true
+    return 0
+}
+
+# List the sing-box outbounds the installed Hub modules declare for their rule
+# actions, one TAB-separated row per action:
+#   action_id  outbound_json
+# This is the fallback K.R.O.T. routes a rule through when the rule carries no
+# outbound_json of its own (a rule written by hand, restored from a backup, or
+# saved by a release whose UI did not copy the template yet). Reads the same
+# /tmp cache as hub_module_config_options, so both callers share one Hub
+# listing, and knows no module: the rows come straight from module.json.
+hub_module_action_outbounds() {
+    hub_guarded_call _hub_module_action_outbounds "$@"
+}
+
+_hub_module_action_outbounds() {
+    local cache_file="${1:-/tmp/krot-hub-modules.json}"
+    local helper
+
+    if [ ! -s "$cache_file" ]; then
+        if [ "$cache_file" = "/tmp/krot-hub-modules.json" ]; then
+            hub_refresh_modules_cache
+        else
+            hub_get_modules > "$cache_file" 2>/dev/null || true
+        fi
+    fi
+    [ -s "$cache_file" ] || return 0
+
+    helper="$(hub_modules_ucode_script)" || return 0
+    updates_command_exists ucode || return 0
+
+    ucode "$helper" action-outbounds "$cache_file" 2>/dev/null || true
+    return 0
+}
+
+# Fetch the outbound for a single action id straight from upstream, used when
+# the cached Hub listing is unusable - most importantly at boot, when the
+# listing request legitimately fails because K.R.O.T. has not brought the
+# uplink up yet. Without this a rule using a module action silently stops
+# working until something else happens to refresh the listing.
+#
+# The index is one small request; module manifests are only fetched for the
+# modules it lists, and the ucode helper extracts the matching action. The
+# result is deliberately NOT written to the listing cache: a hand-fetched subset
+# would poison the cache with a partial listing that the Modules tab would then
+# render as the complete set.
+hub_fetch_action_outbound() {
+    local action="$1"
+    local hub_repo url index_file tmp_dir module_id manifest_file helper rows component
+    local result="[" first=1
+
+    [ -n "$action" ] || return 1
+    # The action id ends up in URLs and file names.
+    case "$action" in
+    *[!A-Za-z0-9_-]*) return 1 ;;
+    esac
+    updates_command_exists ucode || return 1
+    helper="$(hub_modules_ucode_script)" || return 1
+
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/hub-action.XXXXXX" 2> /dev/null)" || return 1
+    index_file="$tmp_dir/index.json"
+    hub_repo="${PODKOP_RELEASE_REPO:-titovcode/krot}"
+    url="https://raw.githubusercontent.com/${hub_repo}/main/hub/index.json?v=$(date +%s)"
+
+    updates_http_get "$url" > "$index_file" 2>/dev/null || true
+    if [ ! -s "$index_file" ]; then
+        rm -rf "$tmp_dir" 2> /dev/null || true
+        return 1
+    fi
+
+    for module_id in $(sed 's/.*"modules"[[:space:]]*:[[:space:]]*\[//;s/\].*//' "$index_file" 2> /dev/null |
+        tr -d '"' | tr ',' ' '); do
+        # busybox `tr` has no [:space:], so trim manually.
+        while [ "${module_id# }" != "$module_id" ]; do module_id="${module_id# }"; done
+        while [ "${module_id% }" != "$module_id" ]; do module_id="${module_id% }"; done
+        [ -n "$module_id" ] || continue
+        case "$module_id" in
+        *[!A-Za-z0-9_-]*) continue ;;
+        esac
+
+        manifest_file="$tmp_dir/$module_id.json"
+        updates_http_get \
+            "https://raw.githubusercontent.com/${hub_repo}/main/hub/${module_id}/module.json?v=$(date +%s)" \
+            > "$manifest_file" 2> /dev/null || true
+        [ -s "$manifest_file" ] || continue
+        json_utils_ucode file-json-valid "$manifest_file" > /dev/null 2>&1 || continue
+
+        # Only consider modules that are actually installed here: a published
+        # manifest is no proof that its component exists on this router, and
+        # routing a rule through a module that is absent would point the
+        # outbound at a service nobody starts.
+        component="$(grep -o '"component"[[:space:]]*:[[:space:]]*"[^"]*"' "$manifest_file" |
+            head -1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+        [ -n "$component" ] || continue
+        hub_module_installed_status "$component" || continue
+
+        # hub-modules.uc reports actions only of modules marked installed. The
+        # listing from hub_get_modules carries that flag, this hand-built one does
+        # not, so it is added here - and the check above is what makes it true.
+        [ "$first" -eq 0 ] && result="${result},"
+        first=0
+        result="${result}$(tr -d '\n\r\t' < "$manifest_file" | sed 's/^{/{"installed":true,/')"
+    done
+    result="${result}]"
+
+    manifest_file="$tmp_dir/modules.json"
+    printf '%s' "$result" > "$manifest_file" 2> /dev/null || {
+        rm -rf "$tmp_dir" 2> /dev/null || true
+        return 1
+    }
+    rows="$(ucode "$helper" action-outbounds "$manifest_file" 2> /dev/null)" || rows=""
+    rm -rf "$tmp_dir" 2> /dev/null || true
+
+    printf '%s\n' "$rows" | awk -F '\t' -v want="$action" '$1 == want { print $2; exit }' | grep . || return 1
+    return 0
 }
 
 hub_add_source() {
@@ -2416,6 +3017,23 @@ hub_remove_module() {
                 /etc/init.d/zapret stop 2>/dev/null || true
                 /etc/init.d/zapret disable 2>/dev/null || true
             fi
+            ;;
+        zapret2)
+            # zapret2 installs to /opt/zapret, same path as classic zapret.
+            # Remove the provider files and stop any running instances.
+            updates_log "Removing zapret2 provider from /opt/zapret"
+            pkill -f "nfqws2" 2>/dev/null || true
+            pkill -f "/opt/zapret/nfq/nfqws" 2>/dev/null || true
+            rm -rf /opt/zapret
+            rm -rf /var/run/krot/zapret /tmp/krot/zapret 2>/dev/null || true
+            # Restart K.R.O.T. to clean up nft rules
+            if [ -x /etc/init.d/krot ]; then
+                updates_log "Restarting K.R.O.T. after zapret2 removal"
+                /etc/init.d/krot restart 2>/dev/null || true
+            fi
+            hub_refresh_modules_cache
+            updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
+            return
             ;;
         byedpi)
             pkg_name="byedpi"
