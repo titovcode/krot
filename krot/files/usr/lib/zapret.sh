@@ -80,7 +80,8 @@ get_rule_nfqws_opt() {
 }
 
 normalize_nfqws_strategy_whitespace() {
-    printf '%s' "$1" | tr '\t\r\n' '   ' | tr -s ' ' | sed 's/^ //; s/ $//'
+    # Remove backslash-continuations, collapse whitespace, trim edges
+    printf '%s' "$1" | sed 's/\\\n/ /g; s/\\\r/ /g; s/\\$//g' | tr '\t\r\n' '   ' | tr -s ' ' | sed 's/^ //; s/ $//'
 }
 
 nfqws_option_argument_mode() {
@@ -432,6 +433,77 @@ collect_nfqws_validation_needles() {
     [ -n "$value" ] && printf '%s\n' "$value"
 }
 
+# Which generation of the provider binary is installed at ZAPRET_NFQWS_BIN?
+#
+# "nfqws"  - classic bol-van/zapret, C-level desync options
+# "nfqws2" - bol-van/zapret2, desync engine in Lua
+#
+# Probed once per run and cached: the supervisor respawns nfqws in a loop and
+# the strategy validator runs per rule, so a --help probe each time would be
+# wasted work on a router. The probe looks for an option that only nfqws2 has.
+# "--help" exits with an error, so the output is read rather than the status.
+ZAPRET_PROVIDER_FLAVOR=""
+
+zapret_provider_flavor() {
+    if [ -n "$ZAPRET_PROVIDER_FLAVOR" ]; then
+        printf '%s\n' "$ZAPRET_PROVIDER_FLAVOR"
+        return 0
+    fi
+
+    ZAPRET_PROVIDER_FLAVOR="nfqws"
+    if [ -x "$ZAPRET_NFQWS_BIN" ]; then
+        if "$ZAPRET_NFQWS_BIN" --help 2>&1 | grep -q -- '--lua-init'; then
+            ZAPRET_PROVIDER_FLAVOR="nfqws2"
+        fi
+    fi
+
+    printf '%s\n' "$ZAPRET_PROVIDER_FLAVOR"
+}
+
+# The mark option differs between the two generations: nfqws2 spells it
+# "--fwmark" and dropped the old "--dpi-desync-fwmark" alias entirely.
+zapret_fwmark_opt() {
+    case "$(zapret_provider_flavor)" in
+    nfqws2) printf -- '--fwmark=%s' "$ZAPRET_DESYNC_MARK" ;;
+    *) printf -- '--dpi-desync-fwmark=%s' "$ZAPRET_DESYNC_MARK" ;;
+    esac
+}
+
+# Make a classic strategy usable by nfqws2, or return non-zero when the caller
+# has nothing usable to run.
+#
+# nfqws2 has no C-level desync options, so any "--dpi-desync*" token from a
+# classic strategy is not merely renamed - it is simply gone. Keeping it would
+# make the provider exit on start, and since the supervisor respawns every few
+# seconds the router would spin on a process that can never run. The tokens are
+# therefore dropped and the Lua profiles are loaded instead, which implement the
+# same job (desync techniques chosen per host and cached).
+#
+# Only the desync options are rewritten. Filters, hostlists, --new profiles and
+# the K.R.O.T. placeholders keep working, so a strategy stays usable across
+# providers as long as it is expressed through filters.
+zapret_translate_nfqws_opt() {
+    local opt="$1"
+    local translated
+
+    if [ "$(zapret_provider_flavor)" != "nfqws2" ]; then
+        printf '%s' "$opt"
+        return 0
+    fi
+
+    # Drop the legacy desync options, keep everything else verbatim.
+    translated="$(printf '%s' "$opt" | tr ' ' '\n' | awk '
+        /^$/                     { next }
+        /^--dpi-desync(-[a-z-]+)?=/ { next }
+        /^--dpi-desync$/         { next }
+        { print }
+    ' | tr '\n' ' ')"
+    translated="$(printf '%s' "$translated" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+
+    printf '%s %s %s' "$translated" "$ZAPRET_NFQWS2_LUA_INIT" "$ZAPRET_NFQWS2_DEFAULT_OPT" |
+        sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
 run_nfqws_dry_run_validation() {
     local raw_opt="$1"
     local old_ifs output_file output summary needles rc
@@ -442,6 +514,12 @@ run_nfqws_dry_run_validation() {
 
     raw_opt="$(expand_zapret_nfqws_opt "$raw_opt")"
     raw_opt="$(normalize_nfqws_strategy_whitespace "$raw_opt")"
+    [ -n "$raw_opt" ] || return 0
+
+    # Validate exactly what will be started: on nfqws2 the classic desync
+    # options are translated away and the Lua profiles are loaded instead, so
+    # validating the pre-translation text would report the provider as broken.
+    raw_opt="$(zapret_translate_nfqws_opt "$raw_opt")"
     [ -n "$raw_opt" ] || return 0
 
     output_file="$(mktemp)"
@@ -455,7 +533,8 @@ run_nfqws_dry_run_validation() {
     # uses "$@" so noglob is no longer needed.
     set +f
 
-    "$ZAPRET_NFQWS_BIN" --dry-run --qnum="$ZAPRET_QUEUE_BASE" --dpi-desync-fwmark="$ZAPRET_DESYNC_MARK" "$@" >"$output_file" 2>&1
+    # shellcheck disable=SC2086
+    "$ZAPRET_NFQWS_BIN" --dry-run --qnum="$ZAPRET_QUEUE_BASE" "$(zapret_fwmark_opt)" "$@" >"$output_file" 2>&1
     rc=$?
     output="$(cat "$output_file")"
     rm -f "$output_file"
@@ -1133,7 +1212,11 @@ run_zapret_nfqws_supervisor() {
         set -- $expanded_opt
         IFS="$old_ifs"
 
-        "$ZAPRET_NFQWS_BIN" --qnum="$queue_number" --dpi-desync-fwmark="$ZAPRET_DESYNC_MARK" "$@" &
+        # Same translation as the validator: the supervisor respawns forever,
+        # so starting nfqws2 with classic desync options would leave the router
+        # respawning a process that exits immediately.
+        # shellcheck disable=SC2086
+        "$ZAPRET_NFQWS_BIN" --qnum="$queue_number" "$(zapret_fwmark_opt)" "$@" &
         child_pid="$!"
         echo "$child_pid" > "$child_pidfile"
         wait "$child_pid"
@@ -1153,7 +1236,7 @@ run_zapret_nfqws_supervisor() {
 
 _start_zapret_runtime_handler() {
     local section="$1"
-    local index queue_number mark_hex raw_opt expanded_opt pidfile child_pidfile logfile pid child_pid
+    local index queue_number mark_hex raw_opt expanded_opt pidfile child_pidfile logfile pid child_pid waited
 
     rule_is_enabled "$section" || return 0
     [ "$(get_rule_action "$section")" = "zapret" ] || return 0
@@ -1163,6 +1246,10 @@ _start_zapret_runtime_handler() {
     mark_hex="$(get_zapret_rule_mark_hex "$index")"
     raw_opt="$(get_rule_nfqws_opt "$section")"
     expanded_opt="$(expand_zapret_nfqws_opt "$raw_opt" "$section")"
+    # Translate for the installed provider generation before handing the
+    # strategy to the supervisor. The placeholders are already expanded at this
+    # point, so what is translated is exactly the text that will be executed.
+    expanded_opt="$(zapret_translate_nfqws_opt "$expanded_opt")"
     pidfile="$ZAPRET_PID_DIR/$section.pid"
     child_pidfile="$ZAPRET_CHILD_PID_DIR/$section.pid"
     logfile="$ZAPRET_LOG_DIR/$section.log"
@@ -1171,7 +1258,23 @@ _start_zapret_runtime_handler() {
     (close_inherited_service_lock_fd; run_zapret_nfqws_supervisor "$section" "$queue_number" "$expanded_opt" "$child_pidfile") >>"$logfile" 2>&1 &
     pid="$!"
     echo "$pid" > "$pidfile"
-    sleep 1
+
+    # Wait for the provider to actually come up instead of guessing with a fixed
+    # sleep. zapret2's nfqws2 loads its Lua desync engine (LuaJIT, JIT warm-up)
+    # before it binds the NFQUEUE, which takes noticeably longer than the
+    # classic nfqws did; checking after a single second turned a merely slow
+    # start into a fatal one, taking the whole configuration down with it. The
+    # supervisor keeps respawning, so a slow start is not a failure.
+    waited=0
+    while [ "$waited" -lt "$ZAPRET_START_TIMEOUT" ]; do
+        kill -0 "$pid" 2>/dev/null || break
+        child_pid="$(cat "$child_pidfile" 2>/dev/null)"
+        if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
 
     if ! kill -0 "$pid" 2>/dev/null; then
         log "nfqws failed to start for rule '$section'. Check $logfile. Aborted." "fatal"
