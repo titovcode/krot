@@ -98,6 +98,311 @@ function valid_outbound() {
     return type(value) == "object" && type(value.type) == "string";
 }
 
+function valid_json_stdin() {
+    return read_stdin_json() != null;
+}
+
+// An Xray config fragment is a JSON object with a top-level "inbounds" array.
+function valid_xray_config() {
+    let value = read_stdin_json();
+    return type(value) == "object" && type(value.inbounds) == "array";
+}
+
+// ucode types JSON integers as "int" and floats as "double"; there is no
+// "number" type, so both have to be listed explicitly.
+function xray_tcp_port(raw) {
+    let port = null;
+    if (type(raw) == "int" || type(raw) == "double")
+        port = int(raw);
+    else if (type(raw) == "string" && match(raw, /^[0-9]+$/))
+        port = int(raw);
+    return (port != null && port > 0 && port < 65536) ? port : null;
+}
+
+// All usable SOCKS inbound ports, in config order. Ranges like "50000-51000"
+// and "dynamic" are deliberately skipped.
+function xray_socks_ports_of(value) {
+    let ports = [];
+    if (type(value) != "object" || type(value.inbounds) != "array")
+        return ports;
+    for (let inbound in value.inbounds) {
+        if (type(inbound) != "object" || inbound.protocol != "socks")
+            continue;
+        let port = xray_tcp_port(inbound.port);
+        if (port != null)
+            push(ports, port);
+    }
+    return ports;
+}
+
+// Inbound tags the config's own routing rules pin to a non-proxy outbound.
+//
+// A pasted config very often carries a second SOCKS listener next to the proxy
+// one and routes it straight to "direct" (the "bypass"/"no proxy" listener a
+// client app uses for split tunnelling). Such an inbound must never become the
+// rule's upstream, otherwise K.R.O.T. hands traffic to a listener that is
+// hard-wired to skip the tunnel.
+function xray_direct_inbound_tags_of(value) {
+    let tags = {};
+    if (type(value) != "object" || type(value.routing) != "object")
+        return tags;
+    let rules = value.routing.rules;
+    if (type(rules) != "array")
+        return tags;
+
+    let direct_outbounds = {};
+    if (type(value.outbounds) == "array") {
+        for (let outbound in value.outbounds) {
+            if (type(outbound) != "object")
+                continue;
+            if (outbound.protocol != "freedom" && outbound.protocol != "blackhole" &&
+                outbound.protocol != "dns")
+                continue;
+            if (type(outbound.tag) == "string")
+                direct_outbounds[outbound.tag] = true;
+        }
+    }
+
+    for (let rule in rules) {
+        if (type(rule) != "object")
+            continue;
+        // No outboundTag means "fall through to the next rule", so such a rule
+        // does not pin the inbound to a non-proxy path.
+        let target = rule.outboundTag;
+        if (type(target) != "string" || !direct_outbounds[target])
+            continue;
+        let inbounds = rule.inboundTag;
+        if (type(inbounds) == "string")
+            inbounds = [ inbounds ];
+        if (type(inbounds) != "array")
+            continue;
+        for (let tag in inbounds)
+            if (type(tag) == "string")
+                tags[tag] = true;
+    }
+    return tags;
+}
+
+// The SOCKS inbound that actually carries proxied traffic, used by auto_port
+// rule rendering. Prints nothing when the config has no usable single-number
+// SOCKS port.
+//
+// Preference order:
+//   1. a SOCKS inbound the config's own routing rules do not send to
+//      "direct"/"block" — the real proxy listener;
+//   2. the first SOCKS inbound, for single-listener configs and for configs
+//      with no routing rules at all.
+//
+// ucode reads stdin once, so the document is parsed here and handed to the
+// helpers rather than calling them twice.
+function xray_socks_proxy_port() {
+    let value = read_stdin_json();
+    if (type(value) != "object" || type(value.inbounds) != "array")
+        return;
+
+    let direct_tags = xray_direct_inbound_tags_of(value);
+    let fallback = null;
+
+    for (let inbound in value.inbounds) {
+        if (type(inbound) != "object" || inbound.protocol != "socks")
+            continue;
+        let port = xray_tcp_port(inbound.port);
+        if (port == null)
+            continue;
+        if (fallback == null)
+            fallback = port;
+        let tag = inbound.tag;
+        if (type(tag) == "string" && direct_tags[tag])
+            continue;
+        print(as_string(port), "\n");
+        return;
+    }
+
+    if (fallback != null)
+        print(as_string(fallback), "\n");
+}
+
+function xray_socks_ports() {
+    for (let port in xray_socks_ports_of(read_stdin_json()))
+        print(as_string(port), "\n");
+}
+
+// Every port an outbound dials upstream, across all supported server lists.
+//
+// "vnext" (VLESS/VMess) and "servers" (Shadowsocks/SOCKS/Trojan) are both walked
+// so a config with several nodes yields several ports: K.R.O.T. has to let all
+// of them out directly, otherwise a phone running its own client is captured by
+// the rule for every node a first-only lookup happened to miss.
+function xray_server_ports() {
+    let value = read_stdin_json();
+    if (type(value) != "object" || type(value.outbounds) != "array")
+        return [];
+
+    let ports = [];
+    let seen = {};
+    for (let outbound in value.outbounds) {
+        if (type(outbound) != "object" || type(outbound.settings) != "object")
+            continue;
+        // A dialerProxy chain hides the real nodes one level down; those are
+        // upstream servers for this config too, so they are counted as well.
+        let settings = [ outbound.settings ];
+        if (type(outbound.proxySettings) == "object")
+            push(settings, outbound.proxySettings);
+
+        for (let setting in settings) {
+            for (let list_name in [ "vnext", "servers" ]) {
+                let nodes = setting[list_name];
+                if (type(nodes) != "array")
+                    continue;
+                for (let node in nodes) {
+                    if (type(node) != "object")
+                        continue;
+                    let port = xray_tcp_port(node.port);
+                    if (port != null && !seen[port]) {
+                        seen[port] = true;
+                        push(ports, port);
+                    }
+                }
+            }
+        }
+    }
+    return ports;
+}
+
+// Make every "wireguard" outbound in an Xray fragment use the userspace
+// (gVisor) stack instead of the kernel TUN device.
+//
+// Why this is not the user's business: Xray 25+ defaults WireGuard outbounds
+// to the kernel TUN, and "dialerProxy" (the sockopt that makes a connection
+// go through another outbound, used here to prepend the obfuscation noise
+// packets) is only honoured on the userspace stack. A fragment that pairs the
+// two is silently broken: Xray accepts the SOCKS request, logs
+// "accepted ... [socks-in -> warp]" plus "Using kernel TUN", and then every
+// upstream connection dies with no error anywhere. That silent failure is
+// indistinguishable from "my provider blocks WARP", which is why the flag is
+// enforced here rather than trusted to every pasted config.
+//
+// Only the flag is added: an explicit "noKernelTun": false in the input is
+// rewritten too, because it produces the very same dead tunnel. Everything
+// else is passed through byte for byte, so a hand-tuned config is never
+// reshaped. Prints the normalized document on stdout.
+function xray_normalize_config() {
+    let value = read_stdin_json();
+    if (type(value) != "object" || type(value.outbounds) != "array")
+        return;
+
+    let changed = false;
+
+    // Optional egress binding, passed as "MARK:INTERFACE" or just "INTERFACE".
+    // Xray runs as a local process, so its own connection to the proxy server
+    // is not covered by any K.R.O.T. source-IP rule and would leave through
+    // the plain WAN. When the server is only reachable through one of the
+    // configured tunnels, that connection is silently dropped and the rule
+    // stops working for every device assigned to it. Binding it explicitly
+    // keeps the whole chain inside the section's own VPN.
+    let binding = as_string(ARGV[1] || "");
+    let egress_mark = null;
+    let egress_iface = null;
+    if (length(binding) > 0) {
+        let parts = split(binding, ":");
+        if (length(parts) > 1) {
+            egress_mark = parts[0];
+            egress_iface = parts[1];
+        } else
+            egress_iface = binding;
+        if (egress_iface == "")
+            egress_iface = null;
+        if (egress_mark == "")
+            egress_mark = null;
+    }
+
+    // Force-disable access log to prevent log spam (one line per connection)
+    if (type(value.log) != "object")
+        value.log = {};
+    if (value.log.access != "none") {
+        value.log.access = "none";
+        changed = true;
+    }
+    // A config pasted from a desktop client carries absolute host paths in
+    // log.access/log.error (e.g. /Users/<name>/Library/...). Xray fails to
+    // start when it cannot open them, and the per-rule fragment then gets
+    // rejected as a whole, so the rule silently falls back to no proxy at
+    // all. Both keys are therefore forced: access off, error on stderr so
+    // it reaches syslog.
+    if (value.log.error != "") {
+        value.log.error = "";
+        changed = true;
+    }
+    if (value.log.dnsLog == true) {
+        delete value.log.dnsLog;
+        changed = true;
+    }
+
+    for (let outbound in value.outbounds) {
+        if (type(outbound) != "object" || outbound.protocol != "wireguard")
+            continue;
+        if (outbound.settings == null || type(outbound.settings) != "object")
+            outbound.settings = {};
+        if (outbound.settings.noKernelTun == true)
+            continue;
+        outbound.settings.noKernelTun = true;
+        changed = true;
+    }
+
+    // Bind the fragment's own upstream connections to the requested egress.
+    // Applied to every non-blackhole outbound: the "proxy" one carries the
+    // tunnel itself, and a "fragment"/"noise" helper is what actually dials
+    // the server, so binding only the proxy would leave the real connection
+    // unbound. sockopt is created only when missing, so anything the user set
+    // by hand survives unless it is the very key being managed here.
+    if (egress_mark != null || egress_iface != null) {
+        for (let outbound in value.outbounds) {
+            if (type(outbound) != "object" || outbound.protocol == "blackhole")
+                continue;
+            if (type(outbound.streamSettings) != "object")
+                outbound.streamSettings = {};
+            if (type(outbound.streamSettings.sockopt) != "object")
+                outbound.streamSettings.sockopt = {};
+            if (egress_mark != null && outbound.streamSettings.sockopt.mark != egress_mark) {
+                // sockopt.mark is a numeric field in Xray: handing it the
+                // "0x800000" spelling from the shell makes the whole config
+                // fail to load, which is the same silent death as before.
+                outbound.streamSettings.sockopt.mark = int(egress_mark, 0);
+                changed = true;
+            }
+            if (egress_iface != null && outbound.streamSettings.sockopt.interface != egress_iface) {
+                outbound.streamSettings.sockopt.interface = egress_iface;
+                changed = true;
+            }
+        }
+    }
+
+    if (changed)
+        print(sprintf("%J", value), "\n");
+}
+
+// Print actions[].config.template_text for one module action from the hub
+// module cache (an array of module.json objects) verbatim on stdout. Returns
+// false when the module or action is not found, so the shell can tell "no
+// template" from "empty template" and wrap the envelope itself.
+function module_config_template(path, module_id, action_id) {
+    let entries = read_json_file(path);
+    for (let entry in array_or_empty(entries)) {
+        if (type(entry) != "object" || as_string(entry.id) != module_id)
+            continue;
+        for (let action in array_or_empty(entry.actions)) {
+            if (type(action) != "object" || as_string(action.id) != action_id)
+                continue;
+            let config = object_or_empty(action.config);
+            if (type(config.template_text) != "string")
+                return false;
+            print(config.template_text);
+            return true;
+        }
+    }
+    return false;
+}
+
 function stdin_length() {
     let value = read_stdin_json();
     if (type(value) == "array" || type(value) == "object")
@@ -902,6 +1207,21 @@ else if (mode == "response-success")
     exit(response_success() ? 0 : 1);
 else if (mode == "valid-outbound")
     exit(valid_outbound() ? 0 : 1);
+else if (mode == "valid-json")
+    exit(valid_json_stdin() ? 0 : 1);
+else if (mode == "valid-xray-config")
+    exit(valid_xray_config() ? 0 : 1);
+else if (mode == "xray-socks-proxy-port")
+    xray_socks_proxy_port();
+else if (mode == "xray-socks-ports")
+    xray_socks_ports();
+else if (mode == "xray-server-ports")
+    for (let port in xray_server_ports())
+        print(as_string(port), "\n");
+else if (mode == "xray-normalize-config")
+    xray_normalize_config();
+else if (mode == "module-config-template")
+    exit(module_config_template(ARGV[1], ARGV[2], ARGV[3]) ? 0 : 1);
 else if (mode == "stdin-length")
     stdin_length();
 else if (mode == "array-item")

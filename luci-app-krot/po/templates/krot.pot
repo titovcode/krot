@@ -345,6 +345,33 @@ msgstr ""
 msgid "Conditions"
 msgstr ""
 
+msgid "Automation"
+msgstr ""
+
+msgid "Enable Automation"
+msgstr ""
+
+msgid "Automatically restart the interface when latency exceeds threshold"
+msgstr ""
+
+msgid "Max Latency (ms)"
+msgstr ""
+
+msgid "Latency threshold in milliseconds. Interface restarts when exceeded."
+msgstr ""
+
+msgid "Failures Before Restart"
+msgstr ""
+
+msgid "Number of consecutive failed checks before restarting the interface"
+msgstr ""
+
+msgid "Check Interval (sec)"
+msgstr ""
+
+msgid "How often to check latency (in seconds)"
+msgstr ""
+
 #: ../luci-app-krot/htdocs/luci-static/resources/view/podkop/settings.js:385
 msgid "Config File Path"
 msgstr ""

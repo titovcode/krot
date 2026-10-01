@@ -51,7 +51,7 @@ function addLocalDeviceChoice(choices, ip, name) {
   const normalizedIp = `${ip || ""}`.trim();
   const normalizedName = normalizeLocalDeviceName(name);
 
-  if (!normalizedIp || !normalizedName) {
+  if (!normalizedIp) {
     return;
   }
 
@@ -59,7 +59,8 @@ function addLocalDeviceChoice(choices, ip, name) {
     return;
   }
 
-  choices[normalizedIp] = normalizedName;
+  // Devices without a DHCP hostname must stay selectable by their IP address.
+  choices[normalizedIp] = normalizedName || normalizedIp;
 }
 
 function addRouterIp(routerIps, ip) {
@@ -98,9 +99,99 @@ function buildRouterIpMap(networkInterfaces) {
   return routerIps;
 }
 
+function subnetFromAddressMask(address, mask) {
+  const ip = `${address || ""}`.trim();
+
+  if (!main.validateIPV4(ip).valid) {
+    return null;
+  }
+
+  const prefix = parseInt(mask, 10);
+
+  if (isNaN(prefix) || prefix < 0 || prefix > 32) {
+    return null;
+  }
+
+  const octets = ip.split(".").map((part) => parseInt(part, 10));
+
+  for (let bit = 0; bit < 32; bit++) {
+    const octetIndex = Math.floor(bit / 8);
+    const bitInOctet = 7 - (bit % 8);
+
+    if (bit < prefix) {
+      continue;
+    }
+
+    octets[octetIndex] &= ~(1 << bitInOctet) & 0xff;
+  }
+
+  return `${octets.join(".")}/${prefix}`;
+}
+
+function isUsableLanSubnet(networkInterface, subnet) {
+  const name = `${networkInterface.interface || ""}`.toLowerCase();
+  const device = `${networkInterface.device || networkInterface.l3_device || ""}`.toLowerCase();
+  const proto = `${networkInterface.proto || ""}`.toLowerCase();
+
+  if (name === "loopback" || device === "lo") {
+    return false;
+  }
+
+  // Point-to-point transports (VPN, PPPoE) carry a /32 host address, never a LAN subnet.
+  if (["amneziawg", "wireguard", "pppoe", "ppp"].includes(proto)) {
+    return false;
+  }
+
+  // Loopback and link-local ranges are never user LAN subnets.
+  if (subnet.startsWith("127.") || subnet.startsWith("169.254.")) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildLanSubnetMap(networkInterfaces) {
+  const lanSubnets = {};
+
+  if (!Array.isArray(networkInterfaces)) {
+    return lanSubnets;
+  }
+
+  networkInterfaces.forEach((networkInterface) => {
+    if (!networkInterface || typeof networkInterface !== "object") {
+      return;
+    }
+
+    const ipv4Addresses = Array.isArray(networkInterface["ipv4-address"])
+      ? networkInterface["ipv4-address"]
+      : [];
+
+    ipv4Addresses.forEach((address) => {
+      const subnet = subnetFromAddressMask(
+        address && typeof address === "object" ? address.address : address,
+        address && typeof address === "object" ? address.mask : null,
+      );
+
+      if (subnet && isUsableLanSubnet(networkInterface, subnet)) {
+        lanSubnets[subnet] = true;
+      }
+    });
+  });
+
+  return lanSubnets;
+}
+
 function buildLocalDeviceChoices(hostHints, dhcpLeases, networkInterfaces) {
   const choices = {};
   const routerIps = buildRouterIpMap(networkInterfaces);
+  const lanSubnets = Object.keys(buildLanSubnetMap(networkInterfaces)).sort();
+
+  lanSubnets.forEach((subnet, index) => {
+    choices[subnet] =
+      index === 0
+        ? _("ALL (All devices and subnets)")
+        : `${subnet} (${_("LAN")})`;
+  });
 
   if (hostHints && typeof hostHints === "object") {
     Object.values(hostHints).forEach((hint) => {
@@ -157,6 +248,12 @@ function loadLocalDeviceChoices() {
       localDeviceChoicesCacheAt = Date.now();
       return localDeviceChoicesCache;
     })
+    .catch(() => {
+      // Return empty object on failure so UI doesn't break
+      localDeviceChoicesCache = {};
+      localDeviceChoicesCacheAt = Date.now();
+      return localDeviceChoicesCache;
+    })
     .finally(() => {
       localDeviceChoicesPromise = null;
     });
@@ -173,7 +270,11 @@ function sortLocalDeviceChoiceValues(choices) {
 
 function hasSingleIpValue(values) {
   return normalizeOptionValues(values).some(
-    (value) => main.validateIPV4(value).valid,
+    (value) =>
+      main.validateIPV4(value).valid ||
+      // Subnet values such as "192.168.1.0/24" must also count, otherwise the
+      // device list is never preloaded and the dropdown renders empty.
+      main.validateSubnet(value).valid,
   );
 }
 

@@ -298,6 +298,57 @@ const EntryPoint = {
     main.coreService();
 
     const rendered = await podkopMap.render();
+
+    try {
+      const titleEl = rendered.querySelector("h2[name='content'], h2");
+      const descrEl = rendered.querySelector(".cbi-map-descr");
+
+      if (titleEl || descrEl) {
+        const headerContainer = document.createElement("div");
+        headerContainer.className = "krot-page-header";
+        headerContainer.style.cssText =
+          "display:flex;align-items:center;gap:18px;margin:0 0 16px 0;";
+
+        const logoImg = document.createElement("img");
+        logoImg.src =
+          typeof L !== "undefined" && typeof L.resource === "function"
+            ? L.resource("view/krot/krot.png")
+            : "/luci-static/resources/view/krot/krot.png";
+        logoImg.alt = "K.R.O.T.";
+        logoImg.style.cssText =
+          "width:64px;height:64px;object-fit:contain;flex-shrink:0;border-radius:12px;";
+
+        const textWrapper = document.createElement("div");
+        textWrapper.className = "krot-page-header-text";
+        textWrapper.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+
+        if (titleEl) {
+          titleEl.style.margin = "0";
+          titleEl.style.padding = "0";
+          titleEl.parentNode?.removeChild(titleEl);
+          textWrapper.appendChild(titleEl);
+        }
+
+        if (descrEl) {
+          descrEl.style.margin = "0";
+          descrEl.style.padding = "0";
+          descrEl.parentNode?.removeChild(descrEl);
+          textWrapper.appendChild(descrEl);
+        }
+
+        headerContainer.appendChild(logoImg);
+        headerContainer.appendChild(textWrapper);
+
+        if (rendered.firstChild) {
+          rendered.insertBefore(headerContainer, rendered.firstChild);
+        } else {
+          rendered.appendChild(headerContainer);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to attach K.R.O.T. header logo", err);
+    }
+
     return rendered;
   },
 };

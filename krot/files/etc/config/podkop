@@ -54,6 +54,30 @@ config settings 'settings'
 #        option outbound_json '{"type":"socks","server":"127.0.0.1","server_port":1080,"version":"5"}'
 #        list community_lists 'russia_inside'
 
+# A module-provided action. Hub modules may declare their own rule actions
+# (module.json -> "actions"); when installed they appear in the rule "Action"
+# dropdown. K.R.O.T. routes any non-built-in action through the JSON-outbound
+# primitive, so modules extend the wrapper without backend changes: the rule's
+# own outbound_json is used when it has one, otherwise the installed module that
+# declares the action provides the document. Example: the "Xray-core Sidecar"
+# module declares the 'xray' action below.
+#
+# A module action may additionally declare a config field of its own through
+# module.json -> actions[].config. The example 'xray_json' option below is such
+# a field: K.R.O.T. renders its content to the declared render_path (one file
+# per rule, ${section} is the rule name) and restarts the declared
+# render_service. auto_port additionally makes the rule's outbound use the port
+# of this config's first SOCKS inbound, so N rules can each run their own
+# sidecar inbound without editing outbound_json. Still no backend change per
+# module - the option name, path and service all come from the manifest.
+#config section 'module_action_example'
+#        option label 'Xray'
+#        option enabled '1'
+#        option action 'xray'
+#        option outbound_json '{"type":"socks","server":"127.0.0.1","server_port":10808,"version":"5"}'
+#        option xray_json '{"inbounds":[{"tag":"krot-socks","port":10808,"listen":"127.0.0.1","protocol":"socks","settings":{"auth":"noauth","udp":true}}],"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}'
+#        list community_lists 'russia_inside'
+
 #config server 'server_vless_reality_example'
 #        option label 'VLESS Reality server'
 #        option enabled '1'

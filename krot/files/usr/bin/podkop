@@ -160,6 +160,13 @@ PODKOP_SUBSCRIPTION_UPDATE_LOCK_DIR="$PODKOP_RUNTIME_STATE_DIR/subscription-upda
 PODKOP_RELOAD_LOCK_DIR="/var/run/krot.reload.lock"
 PODKOP_LIST_UPDATE_CRON_MARKER="# krot-list-update"
 PODKOP_SUBSCRIPTION_UPDATE_CRON_MARKER="# krot-subscription-update"
+PODKOP_SIDECAR_WATCHDOG_CRON_MARKER="# krot-sidecar-watchdog"
+# How many consecutive failed probes before a sidecar rule is taken out of the
+# path, and how long it must stay healthy before being put back. Both are
+# deliberately slow: a single dropped probe is normal on a mobile link, and
+# flapping a rule would bounce the whole device between proxy and direct.
+PODKOP_SIDECAR_FAILURES_THRESHOLD=3
+PODKOP_SIDECAR_RECOVERIES_THRESHOLD=2
 # sing-box falls back to 1d when update_interval is empty, so use a large
 # duration to emulate disabled automatic refreshes for remote rule sets.
 SING_BOX_DISABLED_UPDATE_INTERVAL="876000h"
@@ -284,6 +291,7 @@ subscription_cache_tmpfile() {
     local section="$1"
     local kind="$2"
 
+    ensure_runtime_dirs
     mktemp "$TMP_SUBSCRIPTION_FOLDER/${section}.${kind}.XXXXXX" 2>/dev/null
 }
 
@@ -496,6 +504,12 @@ parse_subscription_source_entry() {
         return 1
         ;;
     esac
+
+    # Validate user agent for control characters that could corrupt HTTP requests
+    if [ -n "$user_agent" ] && printf '%s' "$user_agent" | grep -q '[[:cntrl:]]'; then
+        SUBSCRIPTION_SOURCE_PARSE_ERROR="User-Agent contains invalid control characters"
+        return 1
+    fi
 
     SUBSCRIPTION_SOURCE_URL="$url"
     SUBSCRIPTION_SOURCE_USER_AGENT="$user_agent"
@@ -1321,7 +1335,7 @@ close_inherited_service_lock_fd() {
 
 acquire_runtime_dir_lock() {
     local lock_dir="$1"
-    local owner_pid owner_start my_start
+    local owner_pid
 
     if mkdir "$lock_dir" 2>/dev/null; then
         printf '%s\n' "$$" > "$lock_dir/pid"
@@ -1333,24 +1347,15 @@ acquire_runtime_dir_lock() {
     '' | *[!0-9]*) owner_pid="" ;;
     esac
 
-    # If the recorded PID is alive and was started before the lock was created,
-    # the lock is held by a real owner. This avoids races with PID reuse.
-    if [ -n "$owner_pid" ] && [ -r "/proc/$owner_pid/stat" ]; then
-        owner_start="$(awk '{print $22}' "/proc/$owner_pid/stat" 2>/dev/null)"
-        my_start="$(stat -c '%Y' "$lock_dir" 2>/dev/null)"
-        case "$owner_start" in
-        '' | *[!0-9]*) owner_start=0 ;;
-        esac
-        case "$my_start" in
-        '' | *[!0-9]*) my_start=0 ;;
-        esac
-        # jiffies start time is before mtime (in different units), so treat
-        # a positive owner_start with a valid lock mtime as held.
-        if [ "$owner_start" -gt 0 ] && [ "$my_start" -gt 0 ]; then
+    # Check if the recorded PID is alive and is actually a krot process.
+    # Using kill -0 alone is not enough due to PID reuse; verify cmdline.
+    if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+        if [ -r "/proc/$owner_pid/cmdline" ] && grep -q "krot" "/proc/$owner_pid/cmdline" 2>/dev/null; then
             return 1
         fi
     fi
 
+    # PID is dead or not a krot process - try to steal the lock
     local stale_tmp="${lock_dir}.$$.stale"
     if mkdir "$stale_tmp" 2>/dev/null; then
         printf '%s\n' "$$" > "$stale_tmp/pid"
@@ -2630,7 +2635,6 @@ rebuild_nft_runtime() {
 
     route_table_rule_mark
     create_nft_rules
-    apply_interface_mss_clamp
 }
 
 refresh_list_update_cron() {
@@ -2666,9 +2670,10 @@ reload_sing_box_runtime() {
     log "Reloading sing-box runtime"
 
     if ! /etc/init.d/sing-box reload; then
-        log "Failed to reload sing-box. Aborted." "fatal"
-        exit 1
+        log "Failed to reload sing-box; continuing anyway" "error"
+        return 1
     fi
+    return 0
 }
 
 schedule_urltest_selector_switch() {
@@ -2982,6 +2987,7 @@ collect_module_rule_config() {
     local section="$1"
     local meta option format render_path render_service render_dir auto_port
     local config_value target_file dir file_name tmp_file normalized
+    local egress_interface egress_binding
 
     rule_is_enabled "$section" || return 0
     meta="$(get_rule_module_config_meta "$section")" || return 0
@@ -3007,9 +3013,22 @@ collect_module_rule_config() {
     # pairs "dialerProxy", so the flag is set here instead of being trusted to
     # whatever the user pasted. The helper prints nothing when there is nothing
     # to change, in which case the original text is deployed verbatim.
+    #
+    # The same pass binds the fragment's own upstream connections to
+    # egress_interface: the sidecar is a local process, so without an explicit
+    # bind its connection to the proxy server leaves through the plain WAN and
+    # dies whenever that server is only reachable inside a tunnel.
     if [ "$format" = "xray" ]; then
+        config_get egress_interface "$section" "egress_interface"
+        egress_binding=""
+        if [ -n "$egress_interface" ]; then
+            setup_sidecar_egress_policy_routing "$egress_interface" || egress_interface=""
+            [ -n "$egress_interface" ] &&
+                egress_binding="$(printf '0x%x:%s' "$((NFT_SIDECAR_EGRESS_MARK))" "$egress_interface")"
+        fi
+
         normalized="$(printf '%s' "$config_value" |
-            json_utils_ucode xray-normalize-config 2> /dev/null)"
+            json_utils_ucode xray-normalize-config ${egress_binding:+"$egress_binding"} 2> /dev/null)"
         [ -n "$normalized" ] && config_value="$normalized"
     fi
 
@@ -3223,7 +3242,12 @@ apply_module_rule_auto_port() {
         return 0
     }
 
-    port="$(printf '%s' "$config_value" | json_utils_ucode xray-first-socks-port 2> /dev/null)"
+    # A pasted config may carry several SOCKS inbounds, and its own routing
+    # rules often pin one of them to "direct" (the bypass listener a client app
+    # uses for split tunnelling). xray-socks-proxy-port picks the listener that
+    # really carries proxied traffic instead of taking the first one, which would
+    # leave the rule pointed at a listener that skips the tunnel entirely.
+    port="$(printf '%s' "$config_value" | json_utils_ucode xray-socks-proxy-port 2> /dev/null)"
     case "$port" in
     '' | *[!0-9]*)
         printf '%s' "$outbound_json"
@@ -3878,13 +3902,12 @@ start_main() {
     # base
     route_table_rule_mark
     create_nft_rules
-    # MTU/MSS tuning after the nft table exists so clamp rules are persisted
-    optimize_interface_mtu_mss
     sing_box_configure_service
 
     # sing-box
     sing_box_init_config
     refresh_list_update_cron
+    refresh_sidecar_watchdog_cron
     start_byedpi_runtime
     if ! /etc/init.d/sing-box start; then
         log "Failed to start sing-box. Aborted." "fatal"
@@ -4811,110 +4834,6 @@ optimize_tcp_stack() {
     fi
 }
 
-# Discover virtual/WAN interfaces that commonly benefit from MTU/MSS tuning.
-# Tests a target host with decreasing payload sizes and applies the largest
-# MTU that does not require fragmentation. Also clamps TCP MSS for IPv4/IPv6.
-optimize_interface_mtu_mss() {
-    local enabled test_target min_mtu safe_mtu
-    local iface current_mtu new_mtu test_size base_overhead
-    local has_changes
-
-    config_get_bool enabled "settings" "enable_mtu_mss" 1
-    config_get test_target "settings" "mtu_test_target" "1.1.1.1"
-    config_get min_mtu "settings" "mtu_mss_min_mtu" "1280"
-    [ "$enabled" -eq 1 ] || return 0
-
-    # Reject dangerous test targets (must be a plain IPv4 or a single hostname).
-    case "$test_target" in
-    '')
-        log "MTU test target is empty, skipping MTU/MSS optimization" "warn"
-        return 0
-        ;;
-    *[!A-Za-z0-9.:_-]*)
-        log "MTU test target contains forbidden characters, skipping MTU/MSS optimization" "warn"
-        return 0
-        ;;
-    esac
-    case "$min_mtu" in
-    '' | *[!0-9]*) min_mtu=1280 ;;
-    esac
-    if [ "$min_mtu" -lt 576 ] || [ "$min_mtu" -gt 1500 ]; then
-        log "MTU floor $min_mtu is out of sane range, using 1280" "warn"
-        min_mtu=1280
-    fi
-
-    has_changes=0
-    # IPv4 ICMP overhead: 20 (IP) + 8 (ICMP) = 28; ping -s size means payload bytes
-    base_overhead=28
-
-    for iface in $(mtu_mss_target_interfaces); do
-        case "$iface" in
-        '' | *[!A-Za-z0-9._-]*)
-            log "Skipping suspicious interface name for MTU tuning: $iface" "warn"
-            continue
-            ;;
-        esac
-        [ -d "/sys/class/net/$iface" ] || continue
-        current_mtu="$(cat "/sys/class/net/$iface/mtu" 2>/dev/null)" || continue
-        case "$current_mtu" in
-            '' | *[!0-9]*) continue ;;
-        esac
-
-        new_mtu=""
-        for test_size in 1472 1452 1420 1400 1350 1300 1250; do
-            # Do not probe below the configured safe floor
-            [ "$((test_size + base_overhead))" -ge "$min_mtu" ] || continue
-            if ping -I "$iface" -c 1 -W 2 -M do -s "$test_size" -- "$test_target" >/dev/null 2>&1; then
-                new_mtu=$((test_size + base_overhead))
-                break
-            fi
-        done
-
-        if [ -n "$new_mtu" ] && [ "$new_mtu" -ne "$current_mtu" ] && [ "$new_mtu" -ge "$min_mtu" ]; then
-            ip link set dev "$iface" mtu "$new_mtu" 2>/dev/null && {
-                log "Interface $iface MTU tuned: ${current_mtu} -> ${new_mtu}"
-                has_changes=1
-            } || log "Failed to set MTU $new_mtu on $iface" "warn"
-        fi
-    done
-
-    apply_interface_mss_clamp
-
-    [ "$has_changes" -eq 0 ] && log "MTU/MSS optimization finished with no changes" "debug"
-}
-
-# Collect interfaces that need TCP MSS clamping (well-known virtual/WAN
-# interface prefixes plus VPN interfaces declared in KROT rules).
-mtu_mss_target_interfaces() {
-    {
-        ip -o link show | awk -F': ' '{print $2}' | grep -E '^(ppp|tun|wg|vpn|badwan)'
-        uci -q show krot 2>/dev/null | sed -n "s/^krot\.[^.]*\.interface='\([^']*\)'$/\1/p"
-    } | sed '/^$/d' | sort -u
-}
-
-# Apply TCP MSS clamp for all target interfaces. Idempotent: existing rules are
-# left untouched. Used both at startup and after nft runtime rebuilds.
-apply_interface_mss_clamp() {
-    local iface
-
-    nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1 || return 0
-
-    nft add chain inet "$NFT_TABLE_NAME" forward '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null || true
-
-    for iface in $(mtu_mss_target_interfaces); do
-        if ! nft list chain inet "$NFT_TABLE_NAME" forward 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss"; then
-            nft add rule inet "$NFT_TABLE_NAME" forward oifname "$iface" tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null && {
-                log "TCP MSS clamp enabled for $iface (forward)"
-            } || true
-        fi
-        if ! nft list chain inet "$NFT_TABLE_NAME" mangle_output 2>/dev/null | grep -q "oifname \"$iface\".*tcp flags syn.*mss"; then
-            nft insert rule inet "$NFT_TABLE_NAME" mangle_output oifname "$iface" tcp flags syn tcp option maxseg size set rt mtu 2>/dev/null && {
-                log "TCP MSS clamp enabled for $iface (output)"
-            } || true
-        fi
-    done
-}
-
 parse_generic_string_to_commas_string() {
     local string="$1"
 
@@ -5236,8 +5155,8 @@ route_table_rule_mark() {
             if ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
                 log "Route for tproxy exists" "debug"
             else
-                log "Failed to add route for tproxy. Aborted." "fatal"
-                exit 1
+                log "Failed to add route for tproxy" "error"
+                return 1
             fi
         }
     else
@@ -5250,13 +5169,14 @@ route_table_rule_mark() {
             if has_tproxy_marking_rule; then
                 log "Marking rule exist" "debug"
             else
-                log "Failed to create marking rule. Aborted." "fatal"
-                exit 1
+                log "Failed to create marking rule" "error"
+                return 1
             fi
         }
     else
         log "Marking rule exist" "debug"
     fi
+    return 0
 }
 
 has_tproxy_marking_rule() {
@@ -5280,6 +5200,13 @@ nft_init_interfaces_set() {
     config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
 
     for interface in $source_network_interfaces; do
+        # Validate interface name to prevent nft injection
+        case "$interface" in
+        *[!A-Za-z0-9._-]*)
+            log "Invalid interface name '$interface' skipped" "warn"
+            continue
+            ;;
+        esac
         nft add element inet "$NFT_TABLE_NAME" "$NFT_INTERFACE_SET_NAME" "{ $interface }"
     done
 }
@@ -5773,7 +5700,8 @@ seconds_to_subscription_cron_schedule() {
 remove_cron_job() {
     (crontab -l 2>/dev/null |
         grep -Fv "$PODKOP_LIST_UPDATE_CRON_MARKER" |
-        grep -Fv "$PODKOP_SUBSCRIPTION_UPDATE_CRON_MARKER") | crontab -
+        grep -Fv "$PODKOP_SUBSCRIPTION_UPDATE_CRON_MARKER" |
+        grep -Fv "$PODKOP_SIDECAR_WATCHDOG_CRON_MARKER") | crontab -
     log "The cron job removed"
 }
 
@@ -5870,6 +5798,177 @@ list_update_if_due() {
     fi
 
     list_update
+}
+
+# --- Sidecar (Xray) watchdog -------------------------------------------------
+#
+# A rule backed by a sidecar proxy (action "xray") keeps its devices routed
+# into the sidecar's local SOCKS port at all times. When the sidecar cannot
+# actually reach the proxy server, those devices get no internet at all: the
+# packets are accepted by sing-box, handed to the sidecar, and dropped there
+# with no error surfaced anywhere in the UI. The rule still reads "enabled".
+#
+# This watchdog probes each such rule through its own local port and, after a
+# few consecutive failures, stops routing its devices into the sidecar so they
+# fall back to a working path. Devices are never left without connectivity:
+# bypassing the rule is always better than black-holing them.
+
+# Print the port a sidecar rule listens on, if its config declares one.
+sidecar_rule_local_port() {
+    local section="$1"
+    local config_value port
+
+    config_get config_value "$section" "xray_json"
+    [ -n "$config_value" ] || return 1
+
+    # The probe has to hit the listener that really proxies, so a SOCKS inbound
+    # the config itself routes to "direct" is skipped rather than taken blindly:
+    # that one always answers, and probing it would report a dead tunnel as alive.
+    port="$(printf '%s' "$config_value" | json_utils_ucode xray-socks-proxy-port 2> /dev/null)"
+    case "$port" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$port"
+}
+
+# Probe one sidecar rule end to end through its own SOCKS port. Any HTTP answer
+# counts as alive: the point is that the chain routes, not which page loaded.
+sidecar_rule_probe() {
+    local port="$1"
+    local answer
+
+    command -v curl > /dev/null 2>&1 || return 0
+
+    answer="$(curl -s -o /dev/null -w '%{http_code}' \
+        --max-time 10 --socks5-hostname "127.0.0.1:$port" \
+        https://www.gstatic.com/generate_204 2> /dev/null)"
+
+    case "$answer" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+    [ "$answer" != "000" ]
+}
+
+sidecar_watchdog_state_file() {
+    printf '%s/%s.sidecar-state\n' "$PODKOP_RUNTIME_STATE_DIR" "$1"
+}
+
+# Count a probe result and echo the accumulated (fail|ok) counter.
+sidecar_watchdog_bump() {
+    local state_file="$1"
+    local result="$2"
+    local fails oks
+
+    fails=0
+    oks=0
+    if [ -f "$state_file" ]; then
+        read -r fails oks < "$state_file" 2> /dev/null || true
+    fi
+    case "$fails" in '' | *[!0-9]*) fails=0 ;; esac
+    case "$oks" in '' | *[!0-9]*) oks=0 ;; esac
+
+    if [ "$result" = "ok" ]; then
+        oks=$((oks + 1))
+        fails=0
+    else
+        fails=$((fails + 1))
+        oks=0
+    fi
+
+    printf '%s %s\n' "$fails" "$oks" > "$state_file" 2> /dev/null || true
+    printf '%s %s\n' "$fails" "$oks"
+}
+
+_sidecar_watchdog_handler() {
+    local section="$1"
+    local action port state_file result fails oks
+
+    config_get action "$section" "action"
+    [ "$action" = "xray" ] || return 0
+
+    rule_is_enabled "$section" || return 0
+    config_get_bool sidecar_watchdog_enabled "$section" "sidecar_watchdog" 1
+    [ "$sidecar_watchdog_enabled" -eq 1 ] || return 0
+
+    port="$(sidecar_rule_local_port "$section")" || return 0
+
+    state_file="$(sidecar_watchdog_state_file "$section")"
+
+    if sidecar_rule_probe "$port"; then
+        result="ok"
+    else
+        result="fail"
+    fi
+
+    read -r fails oks << EOF
+$(sidecar_watchdog_bump "$state_file" "$result")
+EOF
+
+    config_get_bool bypassed "$section" "sidecar_bypassed" 0
+
+    if [ "$bypassed" = "1" ]; then
+        # Only put the devices back once the chain has proven itself twice in a
+        # row, otherwise a flapping server would bounce them every minute.
+        if [ "$result" = "ok" ] && [ "$oks" -ge "$PODKOP_SIDECAR_RECOVERIES_THRESHOLD" ]; then
+            uci set "$PODKOP_CONFIG_NAME.$section.sidecar_bypassed=0"
+            uci commit "$PODKOP_CONFIG_NAME"
+            rm -f "$state_file" 2> /dev/null || true
+            log "Sidecar rule '$section' answers again; its devices are routed back through it" "info"
+        fi
+        return 0
+    fi
+
+    if [ "$result" = "fail" ] && [ "$fails" -ge "$PODKOP_SIDECAR_FAILURES_THRESHOLD" ]; then
+        uci set "$PODKOP_CONFIG_NAME.$section.sidecar_bypassed=1"
+        uci commit "$PODKOP_CONFIG_NAME"
+        rm -f "$state_file" 2> /dev/null || true
+        log "Sidecar rule '$section' is not answering on port $port; its devices are bypassed to a working route until it recovers" "warn"
+    fi
+}
+
+sidecar_watchdog() {
+    [ -d "$PODKOP_RELOAD_LOCK_DIR" ] && return 0
+    [ -d "$PODKOP_SUBSCRIPTION_UPDATE_LOCK_DIR" ] && return 0
+
+    config_load "$PODKOP_CONFIG_NAME"
+    config_foreach _sidecar_watchdog_handler "section"
+}
+
+build_sidecar_watchdog_cron_job() {
+    printf '*/2 * * * * %s sidecar_watchdog %s\n' "$PODKOP_BIN" "$PODKOP_SIDECAR_WATCHDOG_CRON_MARKER"
+}
+
+refresh_sidecar_watchdog_cron() {
+    local cron_job
+
+    remove_cron_job
+
+    if has_sidecar_rules; then
+        cron_job="$(build_sidecar_watchdog_cron_job)"
+        crontab -l 2> /dev/null | {
+            cat
+            echo "$cron_job"
+        } | crontab -
+        log "The cron job has been created: $cron_job"
+    fi
+}
+
+_has_sidecar_rule_handler() {
+    local section="$1"
+    local action
+
+    config_get action "$section" "action"
+    [ "$action" = "xray" ] || return 0
+    rule_is_enabled "$section" || return 0
+    config_get_bool sidecar_watchdog_enabled "$section" "sidecar_watchdog" 1
+    [ "$sidecar_watchdog_enabled" -eq 1 ] || return 0
+    SIDECAR_RULES_PRESENT=1
+}
+
+has_sidecar_rules() {
+    SIDECAR_RULES_PRESENT=0
+    config_foreach _has_sidecar_rule_handler "section"
+    [ "$SIDECAR_RULES_PRESENT" = "1" ]
 }
 
 list_update() {
@@ -9605,6 +9704,55 @@ include_source_ips_in_routing_handler() {
 
     config_get fully_routed_ips "$section" "fully_routed_ips"
     if [ -n "$fully_routed_ips" ]; then
+        # A sidecar rule the watchdog took out of the path must not keep
+        # capturing its devices: they would be handed to a proxy that cannot
+        # answer and lose the internet entirely. Leaving them unrouted here
+        # lets them follow the normal route until the rule recovers.
+        config_get_bool sidecar_bypassed "$section" "sidecar_bypassed" 0
+        local raw_action
+        config_get raw_action "$section" "action"
+        if [ "$sidecar_bypassed" = "1" ] && [ "$raw_action" = "xray" ]; then
+            log "Rule '$section' is bypassed by the sidecar watchdog; its devices are not routed into it" "debug"
+            return 0
+        fi
+
+        # A device may already run its own client (a phone with a local VPN app)
+        # that opens a tunnel to the very server this rule uses. The rule above
+        # matches on source IP only, so it would capture that tunnel too and
+        # wrap an encrypted connection inside a second one: the packet leaves
+        # twice as heavy, travels twice as far, and the device sees roughly
+        # half the speed and double the latency. Let traffic addressed to the
+        # proxy's own port go out directly so an already-encrypted tunnel is
+        # never fed back into this rule.
+        if [ "$raw_action" = "xray" ]; then
+            local xray_json sidecar_ports
+            config_get xray_json "$section" "xray_json"
+            if [ -n "$xray_json" ]; then
+                # Every node the config can dial, not just the first: a config
+                # with several vnext/servers entries is a load-balanced or
+                # multi-entry node list, and capturing only the first port would
+                # still wrap the phone's own tunnel on the remaining entries.
+                sidecar_ports="$(
+                    printf '%s' "$xray_json" |
+                        json_utils_ucode xray-server-ports 2> /dev/null |
+                        tr '\n' ',' | sed -E 's/,+$//; s/,/, /g'
+                )"
+            else
+                sidecar_ports=""
+            fi
+            if [ -n "$sidecar_ports" ]; then
+                local bypass_tag
+                bypass_tag="$(gen_id)"
+                config=$(sing_box_cm_add_route_rule "$config" "$bypass_tag" \
+                    "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
+                config=$(sing_box_cm_patch_route_rule "$config" "$bypass_tag" \
+                    "port" "[$sidecar_ports]")
+                config_list_foreach "$section" "fully_routed_ips" \
+                    include_source_ip_in_routing_handler "$bypass_tag"
+                log "Rule '$section': traffic to proxy port(s) $sidecar_ports is not fed back into the proxy" "debug"
+            fi
+        fi
+
         rule_tag="$(gen_id)"
         create_route_rule_for_action "$section" "$action" "$rule_tag"
         config_list_foreach "$section" "fully_routed_ips" include_source_ip_in_routing_handler "$rule_tag"
@@ -9615,7 +9763,7 @@ include_source_ip_in_routing_handler() {
     local source_ip="$1"
     local rule_tag="$2"
     nft_list_all_traffic_from_ip "$source_ip"
-    config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "$source_ip")
+    config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "[\"$source_ip\"]")
 }
 
 populate_source_ips_nft_from_values() {
@@ -10852,9 +11000,9 @@ check_nft() {
 
         nolog "Sets statistics:"
         for set_name in $sets; do
-            if nft list set inet "$NFT_TABLE_NAME" $set_name > /dev/null 2>&1; then
+            if nft list set inet "$NFT_TABLE_NAME" "$set_name" > /dev/null 2>&1; then
                 # Count elements using grep to count commas and add 1 (last element has no comma)
-                local count=$(nft list set inet "$NFT_TABLE_NAME" $set_name 2> /dev/null | grep -o ',\|{' | wc -l)
+                local count=$(nft list set inet "$NFT_TABLE_NAME" "$set_name" 2> /dev/null | grep -o ',\|{' | wc -l)
                 echo "- $set_name: $count elements"
             fi
         done
@@ -12795,6 +12943,9 @@ list_update)
     ;;
 list_update_if_due)
     list_update_if_due
+    ;;
+sidecar_watchdog)
+    sidecar_watchdog
     ;;
 subscription_update)
     subscription_update "$2" "$3"

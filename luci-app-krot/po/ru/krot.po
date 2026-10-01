@@ -236,6 +236,33 @@ msgstr "Параллелизм"
 msgid "Conditions"
 msgstr "Условия"
 
+msgid "Automation"
+msgstr "Автоматизация"
+
+msgid "Enable Automation"
+msgstr "Включить автоматизацию"
+
+msgid "Automatically restart the interface when latency exceeds threshold"
+msgstr "Автоматически перезапускать интерфейс при превышении порога задержки"
+
+msgid "Max Latency (ms)"
+msgstr "Макс. задержка (мс)"
+
+msgid "Latency threshold in milliseconds. Interface restarts when exceeded."
+msgstr "Порог задержки в миллисекундах. При превышении интерфейс перезапускается."
+
+msgid "Failures Before Restart"
+msgstr "Неудачных проверок перед перезапуском"
+
+msgid "Number of consecutive failed checks before restarting the interface"
+msgstr "Количество последовательных неудачных проверок перед перезапуском интерфейса"
+
+msgid "Check Interval (sec)"
+msgstr "Интервал проверки (сек)"
+
+msgid "How often to check latency (in seconds)"
+msgstr "Как часто проверять задержку (в секундах)"
+
 msgid "Config File Path"
 msgstr "Путь к файлу конфигурации"
 
@@ -280,6 +307,12 @@ msgstr "Dev"
 
 msgid "Device, IP, or subnet"
 msgstr "Устройство, IP или подсеть"
+
+msgid "ALL (All devices and subnets)"
+msgstr "ВСЕ (Все устройства и подсети)"
+
+msgid "LAN"
+msgstr "LAN"
 
 msgid "DHCP has DNS server"
 msgstr "DHCP содержит DNS сервер"

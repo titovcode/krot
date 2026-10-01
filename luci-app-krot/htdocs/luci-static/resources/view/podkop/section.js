@@ -736,8 +736,8 @@ function ensureActionProvidersAvailabilityLoaded() {
   }
 
   actionProvidersAvailabilityPromise = Promise.allSettled([
-    main.PodkopShellMethods.getZapretStatus(),
-    main.PodkopShellMethods.getByedpiStatus(),
+    Promise.resolve({ success: false, message: "disabled" }),
+    Promise.resolve({ success: false, message: "disabled" }),
     loadHubModuleActions(),
   ])
     .then(([zapretResult, byedpiResult, actionsResult]) => {
@@ -2864,6 +2864,7 @@ function createSectionContent(section) {
 
   section.tab("settings", _("Settings"));
   section.tab("conditions", _("Conditions"));
+  section.tab("automation", _("Automation"));
 
   o = section.taboption("settings", form.Flag, "enabled", _("Enable"));
   o.default = "1";
@@ -4017,6 +4018,60 @@ function createSectionContent(section) {
     description: _("Match destination ports. Use a single port or a range"),
     dynamicValidate: validatePortCondition,
   });
+
+  // Automation tab fields
+  o = section.taboption(
+    "automation",
+    form.Flag,
+    "automation_enabled",
+    _("Enable Automation"),
+    _("Automatically restart the interface when latency exceeds threshold"),
+  );
+  o.default = "0";
+  o.rmempty = false;
+  o.modalonly = true;
+
+  o = section.taboption(
+    "automation",
+    form.Value,
+    "automation_max_latency",
+    _("Max Latency (ms)"),
+    _("Latency threshold in milliseconds. Interface restarts when exceeded."),
+  );
+  o.datatype = "uinteger";
+  o.default = "1000";
+  o.placeholder = "1000";
+  o.rmempty = false;
+  o.modalonly = true;
+  o.depends("automation_enabled", "1");
+
+  o = section.taboption(
+    "automation",
+    form.Value,
+    "automation_failures",
+    _("Failures Before Restart"),
+    _("Number of consecutive failed checks before restarting the interface"),
+  );
+  o.datatype = "uinteger";
+  o.default = "3";
+  o.placeholder = "3";
+  o.rmempty = false;
+  o.modalonly = true;
+  o.depends("automation_enabled", "1");
+
+  o = section.taboption(
+    "automation",
+    form.Value,
+    "automation_interval",
+    _("Check Interval (sec)"),
+    _("How often to check latency (in seconds)"),
+  );
+  o.datatype = "uinteger";
+  o.default = "30";
+  o.placeholder = "30";
+  o.rmempty = false;
+  o.modalonly = true;
+  o.depends("automation_enabled", "1");
 }
 
 const EntryPoint = {

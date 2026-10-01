@@ -10,3 +10,9 @@ dist-openflux/
 .sina/
 fe-app-podkop/
 node_modules/
+
+# Local router log captures (contain MAC/IP/peer names - do not commit)
+router-logs/
+ss_xray_fixed.json
+test_ss_user.json
+demo/

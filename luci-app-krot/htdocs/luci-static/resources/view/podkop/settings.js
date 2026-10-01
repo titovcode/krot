@@ -366,12 +366,25 @@ function createSettingsContent(section) {
 
     for (const secName in sections) {
       const sec = sections[secName];
+      const action = `${sec.action || ""}`;
+
+      // A module-provided action (any non-empty action that is not a built-in
+      // non-outbound one) behaves like the JSON-outbound primitive, so it can
+      // be selected as a download route here.
+      const isOutboundCapable =
+        action === "proxy" ||
+        action === "outbound" ||
+        action === "vpn" ||
+        (action !== "" &&
+          action !== "direct" &&
+          action !== "block" &&
+          action !== "zapret" &&
+          action !== "byedpi");
+
       if (
         sec[".type"] === "section" &&
         sec.enabled !== "0" &&
-        (sec.action === "proxy" ||
-          sec.action === "outbound" ||
-          sec.action === "vpn")
+        isOutboundCapable
       ) {
         this.keylist.push(secName);
         this.vallist.push(sec.label || secName);

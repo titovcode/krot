@@ -68,10 +68,14 @@ mark_pending_reload() {
             ;;
     esac
 
+    # Write atomically via temp file to avoid partial reads
+    local tmp_file
+    tmp_file="$(mktemp "$PODKOP_PENDING_RELOAD_FILE.XXXXXX" 2>/dev/null)" || return 1
     {
         printf 'reason=%s\n' "$reason"
         printf 'updated_at=%s\n' "$now"
-    } > "$PODKOP_PENDING_RELOAD_FILE"
+    } > "$tmp_file"
+    mv "$tmp_file" "$PODKOP_PENDING_RELOAD_FILE" 2>/dev/null || rm -f "$tmp_file"
 }
 
 consume_pending_reload() {
@@ -191,6 +195,7 @@ stop_service() {
 
 reload_service() {
     local reason="$1"
+    local status
 
     if should_skip_internal_config_reload "$reason"; then
         return 0
@@ -205,13 +210,18 @@ reload_service() {
         return 0
     fi
 
-    trap 'release_reload_lock' EXIT INT TERM
-    "$PODKOP_BIN" reload "$reason" > /dev/null 2>&1
-    local status="$?"
+    # Use subshell to ensure trap cleanup happens before we proceed
+    (
+        trap 'release_reload_lock' EXIT INT TERM
+        "$PODKOP_BIN" reload "$reason" > /dev/null 2>&1
+        printf '%s' "$?" > "${PODKOP_RELOAD_LOCK_DIR}/status"
+    )
+    status="$(cat "${PODKOP_RELOAD_LOCK_DIR}/status" 2>/dev/null || echo 1)"
+    rm -f "${PODKOP_RELOAD_LOCK_DIR}/status" 2>/dev/null
+
     if [ "$status" -eq 0 ] && is_config_change_reload "$reason"; then
         sync_service_triggers
     fi
-    trap - EXIT INT TERM
     release_reload_lock
     run_pending_reload_if_requested
 

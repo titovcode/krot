@@ -80,6 +80,11 @@ updates_init_tmp_dir() {
 
 updates_cleanup() {
     [ -n "$UPDATES_TMP_DIR" ] && rm -rf "$UPDATES_TMP_DIR"
+
+    # Clean old HTTP cache entries (older than 1 hour) to prevent /tmp overflow
+    if [ -d "$UPDATES_HTTP_CACHE_DIR" ]; then
+        find "$UPDATES_HTTP_CACHE_DIR" -type f -mmin +60 -delete 2>/dev/null || true
+    fi
 }
 
 # Run a command and remove $UPDATES_TMP_DIR afterwards, but only when this
@@ -103,7 +108,10 @@ hub_guarded_call() {
 
     [ -n "$UPDATES_TMP_DIR" ] || created_here=1
 
-    "$@"
+    # Use subshell to catch exit calls from the command
+    (
+        "$@"
+    )
     status=$?
 
     if [ -n "$created_here" ] && [ -n "$UPDATES_TMP_DIR" ]; then
@@ -509,6 +517,23 @@ updates_get_service_proxy_address() {
     printf '%s' "$service_proxy_address"
 }
 
+# HTTP cache settings for update checks (prevents LuCI from hanging on slow networks)
+UPDATES_HTTP_CACHE_DIR="/tmp/krot-http-cache"
+UPDATES_HTTP_CACHE_MAX_AGE=600  # 10 minutes
+UPDATES_HTTP_TIMEOUT=3          # 3 seconds max per request
+
+updates_http_get_cache_path() {
+    local url="$1"
+    # Create safe filename from URL (md5sum or fallback to sanitized string)
+    if command -v md5sum >/dev/null 2>&1; then
+        echo "$UPDATES_HTTP_CACHE_DIR/$(echo "$url" | md5sum | cut -d' ' -f1)"
+    else
+        # Fallback: replace non-alphanumeric with underscore
+        local safe_name="$(echo "$url" | sed 's/[^a-zA-Z0-9]/_/g' | cut -c1-100)"
+        echo "$UPDATES_HTTP_CACHE_DIR/$safe_name"
+    fi
+}
+
 updates_http_get_once() {
     local url="$1"
     local output_path="$2"
@@ -516,9 +541,9 @@ updates_http_get_once() {
 
     if updates_command_exists curl; then
         if [ -n "$service_proxy_address" ]; then
-            curl --connect-timeout 5 -m 30 -fsSL -x "http://$service_proxy_address" "$url" -o "$output_path"
+            curl --connect-timeout 2 -m "$UPDATES_HTTP_TIMEOUT" -fsSL -x "http://$service_proxy_address" "$url" -o "$output_path"
         else
-            curl --connect-timeout 5 -m 30 -fsSL "$url" -o "$output_path"
+            curl --connect-timeout 2 -m "$UPDATES_HTTP_TIMEOUT" -fsSL "$url" -o "$output_path"
         fi
         return $?
     fi
@@ -526,9 +551,9 @@ updates_http_get_once() {
     if updates_command_exists wget; then
         if [ -n "$service_proxy_address" ]; then
             http_proxy="http://$service_proxy_address" https_proxy="http://$service_proxy_address" \
-                wget -T 30 -q -O "$output_path" "$url"
+                wget -T "$UPDATES_HTTP_TIMEOUT" -q -O "$output_path" "$url"
         else
-            wget -T 30 -q -O "$output_path" "$url"
+            wget -T "$UPDATES_HTTP_TIMEOUT" -q -O "$output_path" "$url"
         fi
         return $?
     fi
@@ -538,14 +563,41 @@ updates_http_get_once() {
 
 updates_http_get() {
     local url="$1"
-    local service_proxy_address output_path
+    local service_proxy_address output_path cache_path cache_age now mtime
 
+    # Ensure cache directory exists with restricted permissions
+    if [ ! -d "$UPDATES_HTTP_CACHE_DIR" ]; then
+        mkdir -p "$UPDATES_HTTP_CACHE_DIR" 2>/dev/null || true
+        chmod 700 "$UPDATES_HTTP_CACHE_DIR" 2>/dev/null || true
+    fi
+
+    cache_path="$(updates_http_get_cache_path "$url")"
+
+    # Check if we have fresh cached data
+    if [ -f "$cache_path" ]; then
+        now="$(date +%s)"
+        mtime="$(stat -c %Y "$cache_path" 2>/dev/null || echo 0)"
+        cache_age=$((now - mtime))
+
+        if [ "$cache_age" -lt "$UPDATES_HTTP_CACHE_MAX_AGE" ]; then
+            cat "$cache_path"
+            return 0
+        fi
+    fi
+
+    # Cache miss or stale - try to fetch fresh data
     output_path="$(mktemp /tmp/krot-updates-http.XXXXXX 2>/dev/null || true)"
-    [ -n "$output_path" ] || return 1
+    [ -n "$output_path" ] || {
+        # If mktemp failed but we have stale cache, use it
+        [ -f "$cache_path" ] && cat "$cache_path"
+        return 1
+    }
 
     service_proxy_address="$(updates_get_service_proxy_address)"
     if [ -n "$service_proxy_address" ]; then
         if updates_http_get_once "$url" "$output_path" "$service_proxy_address"; then
+            # Save to cache with restricted permissions and output
+            cp "$output_path" "$cache_path" 2>/dev/null && chmod 600 "$cache_path" 2>/dev/null || true
             cat "$output_path"
             rm -f "$output_path"
             return 0
@@ -556,12 +608,22 @@ updates_http_get() {
     fi
 
     if updates_http_get_once "$url" "$output_path" ""; then
+        # Save to cache with restricted permissions and output
+        cp "$output_path" "$cache_path" 2>/dev/null && chmod 600 "$cache_path" 2>/dev/null || true
         cat "$output_path"
         rm -f "$output_path"
         return 0
     fi
 
     rm -f "$output_path"
+
+    # Network failed - return stale cache if available
+    if [ -f "$cache_path" ]; then
+        updates_log "Using stale cache for $url (network unavailable)" "debug"
+        cat "$cache_path"
+        return 0
+    fi
+
     return 1
 }
 
@@ -572,9 +634,9 @@ updates_download_file_once_with_proxy() {
 
     if updates_command_exists curl; then
         if [ -n "$service_proxy_address" ]; then
-            curl --connect-timeout 5 -m 120 -fsSL -x "http://$service_proxy_address" "$url" -o "$output_path"
+            curl --connect-timeout 3 -m 120 -fsSL -x "http://$service_proxy_address" "$url" -o "$output_path"
         else
-            curl --connect-timeout 5 -m 120 -fsSL "$url" -o "$output_path"
+            curl --connect-timeout 3 -m 120 -fsSL "$url" -o "$output_path"
         fi
         return $?
     fi
@@ -582,9 +644,9 @@ updates_download_file_once_with_proxy() {
     if updates_command_exists wget; then
         if [ -n "$service_proxy_address" ]; then
             http_proxy="http://$service_proxy_address" https_proxy="http://$service_proxy_address" \
-                wget -T 120 -q -O "$output_path" "$url"
+                wget -T 120 --connect-timeout=3 -q -O "$output_path" "$url"
         else
-            wget -T 120 -q -O "$output_path" "$url"
+            wget -T 120 --connect-timeout=3 -q -O "$output_path" "$url"
         fi
         return $?
     fi

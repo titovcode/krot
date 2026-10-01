@@ -47,7 +47,7 @@ krot_has_enabled_sections() {
 		function clean(value) { gsub(/^'\''|'\''$$/, "", value); return value }
 		$$3 == "section" { type[$$2] = 1 }
 		$$3 == "enabled" && clean($$4) != "0" { enabled[$$2] = 1 }
-		$$3 == "action" && clean($$4) ~ /^(direct|proxy|vpn|outbound|byedpi|zapret)$$/ { action[$$2] = 1 }
+		$$3 == "action" && clean($$4) ~ /^[A-Za-z0-9_-]+$$/ { action[$$2] = 1 }
 		END {
 			for (section in action) {
 				if (type[section] && enabled[section]) {
@@ -64,6 +64,12 @@ if [ -x /etc/init.d/krot ] && krot_has_enabled_sections; then
 	/etc/init.d/krot start >/dev/null 2>&1 || true
 fi
 
+# Install automation cron job (runs every minute, script rate-limits itself)
+if ! grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
+	echo "* * * * * /usr/lib/krot/automation.sh >/dev/null 2>&1" >> /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
 exit 0
 endef
 
@@ -76,6 +82,13 @@ grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /
 [ -f /etc/iproute2/rt_tables ] && sed -i "/[[:space:]]krot_vpn_/d" /etc/iproute2/rt_tables
 
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
+
+# Remove automation cron job
+if [ -f /etc/crontabs/root ]; then
+	sed -i "/krot\/automation\.sh/d" /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
 if [ -r /usr/lib/krot/dnsmasq_failsafe_restore.sh ]; then
 	sh /usr/lib/krot/dnsmasq_failsafe_restore.sh >/dev/null 2>&1 || true
 else
@@ -107,6 +120,9 @@ define Package/krot/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/krot
 	$(CP) ./files/usr/lib/* $(1)/usr/lib/krot/
+
+	$(INSTALL_DIR) $(1)/usr/lib/krot
+	$(INSTALL_BIN) ./files/usr/lib/krot/automation.sh $(1)/usr/lib/krot/automation.sh
 
 	sed -i -e 's/__COMPILED_VERSION_VARIABLE__/$(PODKOP_COMPILED_VERSION)/g' $(1)/usr/lib/krot/constants.sh
 endef

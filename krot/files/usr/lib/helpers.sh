@@ -283,7 +283,9 @@ port_numbers_to_json_array() {
 # Decodes a URL-encoded string
 url_decode() {
     local encoded="$1"
-    printf '%b' "$(echo "$encoded" | sed 's/+/ /g; s/%/\\x/g')"
+    # First escape existing backslashes to prevent printf %b from interpreting them
+    # Then decode %XX sequences and convert + to space
+    printf '%b' "$(printf '%s' "$encoded" | sed -e 's/\\/\\\\/g' -e 's/+/ /g' -e 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
 }
 
 # Returns the scheme (protocol) part of a URL
@@ -610,9 +612,17 @@ convert_crlf_to_lf() {
     if grep -q $'\r' "$filepath"; then
         log "File '$filepath' contains CRLF line endings. Converting to LF..." "debug"
         local tmpfile
-        tmpfile=$(mktemp)
-        tr -d '\r' < "$filepath" > "$tmpfile" && mv "$tmpfile" "$filepath" || rm -f "$tmpfile"
+        tmpfile=$(mktemp) || return 1
+        # Preserve file permissions before mv
+        chmod --reference="$filepath" "$tmpfile" 2>/dev/null || true
+        if tr -d '\r' < "$filepath" > "$tmpfile" && mv "$tmpfile" "$filepath"; then
+            return 0
+        else
+            rm -f "$tmpfile"
+            return 1
+        fi
     fi
+    return 0
 }
 
 #######################################
@@ -627,12 +637,16 @@ convert_crlf_to_lf() {
 parse_domain_or_subnet_string_to_commas_string() {
     local string="$1"
     local type="$2"
+    local tmpfile result
 
-    tmpfile=$(mktemp)
+    tmpfile=$(mktemp) || return 1
+    # Ensure cleanup on exit/interrupt
+    trap 'rm -f "$tmpfile"' EXIT INT TERM
     printf "%s\n" "$string" | sed -e 's/[[:space:]]*\/\/.*$//' -e 's/[[:space:]]*#.*$//' | tr ', ' '\n' | grep -v '^$' > "$tmpfile"
 
     result="$(parse_domain_or_subnet_file_to_comma_string "$tmpfile" "$type")"
     rm -f "$tmpfile"
+    trap - EXIT INT TERM
 
     echo "$result"
 }
@@ -728,7 +742,12 @@ vpn_section_index() {
     VPN_SECTION_FOUND=0
 
     config_foreach _count_vpn_sections_handler "$1"
+    if [ "$VPN_SECTION_FOUND" != "1" ]; then
+        echo 0
+        return 1
+    fi
     echo "$VPN_SECTION_COUNTER"
+    return 0
 }
 
 _count_vpn_sections_handler() {
@@ -764,6 +783,69 @@ get_vpn_rt_table_name() {
     local section="$1"
 
     echo "krot_vpn_$section"
+}
+
+# Bind a sidecar proxy process (Xray) to a tunnel for its own upstream
+# connections.
+#
+# K.R.O.T. routes client traffic by source IP, so everything a rule sends to a
+# sidecar arrives on its local SOCKS port. The sidecar then opens a brand new
+# connection to the proxy server from the router itself, which no source-IP
+# rule covers: it leaves through the plain WAN. When the server is only
+# reachable through one of the configured tunnels, that connection is dropped
+# and the rule looks enabled and healthy while every device assigned to it
+# loses the internet. Routing that egress explicitly through the tunnel closes
+# the loop.
+setup_sidecar_egress_policy_routing() {
+    local interface_name="$1"
+    local mark table_name gw_ip route_added
+
+    [ -n "$interface_name" ] || return 0
+    [ -d "/sys/class/net/$interface_name" ] || {
+        log "Sidecar egress interface '$interface_name' does not exist; keeping the default WAN route" "warn"
+        return 1
+    }
+
+    mark="$((NFT_SIDECAR_EGRESS_MARK))"
+    table_name="krot_sidecar_egress"
+
+    gw_ip="$(ip -4 -o addr show dev "$interface_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+
+    grep -q "^$NFT_SIDECAR_EGRESS_RT_TABLE $table_name" /etc/iproute2/rt_tables 2>/dev/null || \
+        echo "$NFT_SIDECAR_EGRESS_RT_TABLE $table_name" >> /etc/iproute2/rt_tables
+
+    ip route flush table "$table_name" 2>/dev/null || true
+
+    route_added=0
+    if [ -n "$gw_ip" ]; then
+        ip route add default via "$gw_ip" dev "$interface_name" table "$table_name" 2>/dev/null && route_added=1
+    fi
+    if [ "$route_added" -eq 0 ]; then
+        ip route add default dev "$interface_name" table "$table_name" 2>/dev/null || {
+            log "Failed to add a default route for the sidecar via '$interface_name'" "warn"
+            return 1
+        }
+    fi
+
+    ip rule del fwmark "$mark" table "$table_name" 2>/dev/null || true
+    ip -4 rule add fwmark "$mark" table "$table_name" priority 1099 2>/dev/null || {
+        log "Failed to add the ip rule for sidecar egress via '$interface_name'" "warn"
+        return 1
+    }
+
+    log "Sidecar egress bound to '$interface_name' (mark=$mark table=$table_name)" "debug"
+    return 0
+}
+
+cleanup_sidecar_egress_policy_routing() {
+    local mark table_name
+
+    mark="$((NFT_SIDECAR_EGRESS_MARK))"
+    table_name="krot_sidecar_egress"
+
+    ip rule del fwmark "$mark" table "$table_name" 2>/dev/null || true
+    ip route flush table "$table_name" 2>/dev/null || true
+    sed -i "/^$NFT_SIDECAR_EGRESS_RT_TABLE $table_name$/d" /etc/iproute2/rt_tables 2>/dev/null || true
 }
 
 setup_vpn_policy_routing() {

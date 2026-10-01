@@ -38,6 +38,14 @@ NFT_OUTBOUND_MARK="0x00200000"
 NFT_VPN_MARK_BASE="0x00400000"
 NFT_VPN_RT_TABLE_BASE=1000
 
+# Egress mark/route table used to bind a sidecar proxy (Xray) process to a
+# tunnel. A sidecar runs as a local process, so its own upstream connection
+# carries no K.R.O.T. source-IP mark and would leave through the plain WAN,
+# which fails whenever the proxy server is only reachable inside a tunnel.
+# Base bit (23) stays disjoint from the fakeip/outbound/VPN marks above.
+NFT_SIDECAR_EGRESS_MARK="0x00800000"
+NFT_SIDECAR_EGRESS_RT_TABLE=1099
+
 ## sing-box
 SB_REQUIRED_VERSION="1.12.0"
 # DNS
@@ -98,10 +106,33 @@ ZAPRET_ROUTE_MARK_BASE="0x01000000"
 ZAPRET_QUEUE_BASE=4000
 ZAPRET_QUEUE_RANGE_SIZE=256
 ZAPRET_NFQWS_RESPAWN_DELAY=5
+# How long to wait for a provider to bind its NFQUEUE before calling the start
+# failed. zapret2 loads a Lua desync engine before binding, so this has to be
+# generous compared with the classic binary's near-instant start.
+ZAPRET_START_TIMEOUT=8
 ZAPRET_DESYNC_MARK="0x40000000"
 ZAPRET_DESYNC_MARK_POSTNAT="0x20000000"
 ZAPRET_LEGACY_DEFAULT_NFQWS_OPT="--filter-tcp=80 <HOSTLIST> --dpi-desync=fake,fakedsplit --dpi-desync-autottl=2 --dpi-desync-fooling=badsum --new --filter-tcp=443 --hostlist=/opt/zapret/ipset/zapret-hosts-google.txt --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-repeats=11 --dpi-desync-fooling=badsum --dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com --new --filter-udp=443 --hostlist=/opt/zapret/ipset/zapret-hosts-google.txt --dpi-desync=fake --dpi-desync-repeats=11 --dpi-desync-fake-quic=/opt/zapret/files/fake/quic_initial_www_google_com.bin --new --filter-udp=443 <HOSTLIST_NOAUTO> --dpi-desync=fake --dpi-desync-repeats=11 --new --filter-tcp=443 <HOSTLIST> --dpi-desync=multidisorder --dpi-desync-split-pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1"
 ZAPRET_DEFAULT_NFQWS_OPT="--filter-tcp=80 --dpi-desync=fake,fakedsplit --dpi-desync-autottl=2 --dpi-desync-fooling=badsum --new --filter-tcp=443 --dpi-desync=fake,multidisorder --dpi-desync-split-pos=1,midsld --dpi-desync-repeats=11 --dpi-desync-fooling=badsum --dpi-desync-fake-tls-mod=rnd,dupsid,sni=www.google.com --new --filter-udp=443 --dpi-desync=fake --dpi-desync-repeats=11 --dpi-desync-fake-quic=/opt/zapret/files/fake/quic_initial_www_google_com.bin"
+# Zapret2 (bol-van/zapret2) ships "nfqws2" as the provider binary under the same
+# /opt/zapret path. It is not a drop-in replacement for the classic nfqws: the
+# whole desync engine moved from C options into Lua, so every "--dpi-desync*"
+# option above is rejected as "unrecognized" and even "--dpi-desync=fake" is
+# gone. nfqws2 also renamed the mark option to "--fwmark" and has no
+# "--dpi-desync-fwmark" at all.
+#
+# On nfqws2 the strategy is therefore expressed through the upstream Lua
+# profiles, invoked exactly the way upstream's own init script does it
+# (init.d/openwrt/zapret2: LUAOPT + NFQWS2_OPT_BASE). zapret-lib provides the
+# desync primitives, zapret-antidpi the per-protocol techniques, and
+# zapret-auto the per-host orchestration that picks a technique and caches it -
+# which is the behaviour the classic hand-written strategies approximated.
+ZAPRET_LUA_DIR="$ZAPRET_PROVIDER_BASE_DIR/lua"
+ZAPRET_NFQWS2_LUA_INIT="--lua-init=@$ZAPRET_LUA_DIR/zapret-lib.lua --lua-init=@$ZAPRET_LUA_DIR/zapret-antidpi.lua --lua-init=@$ZAPRET_LUA_DIR/zapret-auto.lua"
+# Baseline filters; the desync behaviour itself comes from the Lua profiles
+# above. "--filter-tcp=443 --filter-udp=443" mirrors the ports the classic
+# default strategy acted on.
+ZAPRET_NFQWS2_DEFAULT_OPT="--filter-tcp=443 --filter-udp=443"
 
 ## ByeDPI
 BYEDPI_BIN="/usr/bin/ciadpi"

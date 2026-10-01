@@ -1,0 +1,27 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+RUN apt-get update && \
+    apt-get install -y \
+    build-essential \
+    curl \
+    fakeroot \
+    file \
+    gawk \
+    git \
+    patch \
+    python3 \
+    rsync \
+    tar \
+    unzip \
+    util-linux \
+    wget \
+    xz-utils \
+    zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+ENTRYPOINT ["bash", "scripts/build-openwrt-packages-wsl.sh"]
