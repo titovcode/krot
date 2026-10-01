@@ -247,14 +247,8 @@ build_backend_root() {
   install -m 0755 "$ROOT_DIR/krot/files/etc/init.d/podkop" "$output_root/etc/init.d/krot"
   install -m 0644 "$ROOT_DIR/krot/files/etc/config/podkop" "$output_root/etc/config/krot"
   install -m 0755 "$ROOT_DIR/krot/files/usr/bin/podkop" "$output_root/usr/bin/krot"
-  # Install automation.sh explicitly to ensure correct path
-  install -m 0755 "$ROOT_DIR/krot/files/usr/lib/krot/automation.sh" "$output_root/usr/lib/krot/automation.sh" 2>/dev/null || true
-  # Copy other lib files, excluding the nested krot dir if it exists
-  if [ -d "$ROOT_DIR/krot/files/usr/lib/krot" ]; then
-    cp -a "$ROOT_DIR/krot/files/usr/lib/krot/." "$output_root/usr/lib/krot/" 2>/dev/null || true
-  else
-    cp -a "$ROOT_DIR/krot/files/usr/lib/." "$output_root/usr/lib/krot/"
-  fi
+  # Copy all lib files
+  cp -a "$ROOT_DIR/krot/files/usr/lib/." "$output_root/usr/lib/krot/"
 
   sed -i -e "s/__COMPILED_VERSION_VARIABLE__/${RELEASE_VERSION}/g" \
     "$output_root/usr/lib/krot/constants.sh"
