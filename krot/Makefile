@@ -21,7 +21,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/krot
 	SECTION:=net
 	CATEGORY:=Network
-	DEPENDS:=+sing-box +curl +ucode +ucode-mod-fs +kmod-nft-tproxy +coreutils-base64 +coreutils-sort +bind-dig +nftables +kmod-nft-nat +kmod-nft-offload +jsonfilter
+	DEPENDS:=+libc +sing-box +curl +ucode +ucode-mod-fs +kmod-nft-tproxy +coreutils-base64 +coreutils-sort +bind-dig +nftables +kmod-nft-nat +kmod-nft-offload +kmod-tcp-bbr +jsonfilter
 	CONFLICTS:=https-dns-proxy nextdns luci-app-passwall luci-app-passwall2
 	TITLE:=K.R.O.T. backend service
 	URL:=https://github.com/titovcode/krot
@@ -79,7 +79,7 @@ define Package/krot/prerm
 /etc/init.d/krot stop >/dev/null 2>&1 || true
 
 grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /etc/iproute2/rt_tables 2>/dev/null || true
-[ -f /etc/iproute2/rt_tables ] && sed -i "/[[:space:]]krot_vpn_/d" /etc/iproute2/rt_tables
+[ -f /etc/iproute2/rt_tables ] && sed -i "/[[:space:]]krot_vpn_/d" /etc/iproute2/rt_tables 2>/dev/null || true
 
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
 
@@ -120,9 +120,7 @@ define Package/krot/install
 
 	$(INSTALL_DIR) $(1)/usr/lib/krot
 	$(CP) ./files/usr/lib/* $(1)/usr/lib/krot/
-
-	$(INSTALL_DIR) $(1)/usr/lib/krot
-	$(INSTALL_BIN) ./files/usr/lib/krot/automation.sh $(1)/usr/lib/krot/automation.sh
+	chmod 0755 $(1)/usr/lib/krot/automation.sh
 
 	sed -i -e 's/__COMPILED_VERSION_VARIABLE__/$(PODKOP_COMPILED_VERSION)/g' $(1)/usr/lib/krot/constants.sh
 endef

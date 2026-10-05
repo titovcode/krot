@@ -254,7 +254,8 @@ build_backend_root() {
     "$output_root/usr/lib/krot/constants.sh"
 
   normalize_package_root_modes "$output_root"
-  chmod 0755 "$output_root/etc/init.d/krot" "$output_root/usr/bin/krot"
+  chmod 0755 "$output_root/etc/init.d/krot" "$output_root/usr/bin/krot" \
+             "$output_root/usr/lib/krot/automation.sh"
 }
 
 build_app_root() {
@@ -394,6 +395,12 @@ if [ -x /etc/init.d/krot ] && krot_has_enabled_sections; then
 	/etc/init.d/krot start >/dev/null 2>&1 || true
 fi
 
+# Install automation cron job (runs every minute, script rate-limits itself)
+if ! grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
+	echo "* * * * * /usr/lib/krot/automation.sh >/dev/null 2>&1" >> /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
 exit 0
 EOF
 
@@ -405,6 +412,12 @@ EOF
 /etc/init.d/krot stop >/dev/null 2>&1 || true
 
 grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /etc/iproute2/rt_tables 2>/dev/null || true
+
+# Remove the automation cron job
+if [ -f /etc/crontabs/root ]; then
+	sed -i "/krot\\/automation\\.sh/d" /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
 
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
 if [ -r /usr/lib/krot/dnsmasq_failsafe_restore.sh ]; then
@@ -593,6 +606,12 @@ if [ -x /etc/init.d/krot ] && krot_has_enabled_sections; then
 	/etc/init.d/krot start >/dev/null 2>&1 || true
 fi
 
+# Install automation cron job (runs every minute, script rate-limits itself)
+if ! grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
+	echo "* * * * * /usr/lib/krot/automation.sh >/dev/null 2>&1" >> /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
 exit 0
 EOF
 
@@ -602,6 +621,13 @@ EOF
 # ip rules/routes by table NAME ("krot"), which must still resolve here.
 /etc/init.d/krot stop >/dev/null 2>&1 || true
 grep -q "105 krot" /etc/iproute2/rt_tables 2>/dev/null && sed -i "/105 krot/d" /etc/iproute2/rt_tables 2>/dev/null || true
+
+# Remove the automation cron job
+if [ -f /etc/crontabs/root ]; then
+	sed -i "/krot\\/automation\\.sh/d" /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
+fi
+
 /usr/bin/krot restore_dnsmasq >/dev/null 2>&1 || true
 if [ -r /usr/lib/krot/dnsmasq_failsafe_restore.sh ]; then
 	sh /usr/lib/krot/dnsmasq_failsafe_restore.sh >/dev/null 2>&1 || true
@@ -653,6 +679,12 @@ krot_has_enabled_sections() {
 if [ -x /etc/init.d/krot ] && krot_has_enabled_sections; then
 	/etc/init.d/krot enable >/dev/null 2>&1 || true
 	/etc/init.d/krot start >/dev/null 2>&1 || true
+fi
+
+# Install automation cron job (runs every minute, script rate-limits itself)
+if ! grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
+	echo "* * * * * /usr/lib/krot/automation.sh >/dev/null 2>&1" >> /etc/crontabs/root 2>/dev/null || true
+	/etc/init.d/cron restart >/dev/null 2>&1 || true
 fi
 
 exit 0

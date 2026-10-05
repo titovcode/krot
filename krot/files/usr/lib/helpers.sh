@@ -365,12 +365,10 @@ url_strip_fragment() {
 
 # Decodes and returns a base64-encoded string
 base64_decode() {
-    local str="$1"
-    local decoded_url
-
-    decoded_url="$(echo "$str" | base64 -d 2> /dev/null)"
-
-    echo "$decoded_url"
+    # Propagate the base64 exit status to the caller: an `echo` here would
+    # always reset $? to 0 and silently turn a corrupted payload into a
+    # garbage outbound.
+    printf '%s' "$1" | base64 -d 2> /dev/null
 }
 
 # Generates a unique 16-character ID based on the current timestamp, the shell PID and random bytes
@@ -385,17 +383,23 @@ download_to_file() {
     local http_proxy_address="$3"
     local retries="${4:-3}"
     local wait="${5:-2}"
+    local attempt
 
     for attempt in $(seq 1 "$retries"); do
         if [ -n "$http_proxy_address" ]; then
-            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" && break
+            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" && return 0
         else
-            wget -O "$filepath" "$url" && break
+            wget -O "$filepath" "$url" && return 0
         fi
 
+        # A failed download can leave a truncated or empty file behind; remove
+        # it so the caller never mistakes a partial download for a good one.
+        rm -f "$filepath" 2>/dev/null || true
         log "Attempt $attempt/$retries to download $url failed" "warn"
         sleep "$wait"
     done
+
+    return 1
 }
 
 get_device_model() {
@@ -611,11 +615,13 @@ convert_crlf_to_lf() {
 
     if grep -q $'\r' "$filepath"; then
         log "File '$filepath' contains CRLF line endings. Converting to LF..." "debug"
-        local tmpfile
+        local tmpfile saved_perms
         tmpfile=$(mktemp) || return 1
-        # Preserve file permissions before mv
-        chmod --reference="$filepath" "$tmpfile" 2>/dev/null || true
+        # Preserve file permissions across the rewrite: BusyBox chmod has no
+        # --reference, so capture and re-apply the mode manually.
+        saved_perms="$(stat -c '%a' "$filepath" 2>/dev/null || true)"
         if tr -d '\r' < "$filepath" > "$tmpfile" && mv "$tmpfile" "$filepath"; then
+            [ -n "$saved_perms" ] && chmod "$saved_perms" "$filepath" 2>/dev/null || true
             return 0
         else
             rm -f "$tmpfile"

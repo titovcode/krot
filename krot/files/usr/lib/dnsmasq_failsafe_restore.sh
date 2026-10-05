@@ -30,6 +30,16 @@ podkop_dnsmasq_failsafe_restore() {
     fi
     uci -q delete "dhcp.$PODKOP_DNSMASQ_SECTION" >/dev/null 2>&1 || true
 
+    # If K.R.O.T. never touched dnsmasq (no split instance, no backed-up
+    # settings and our DNS not among the default servers), there is nothing to
+    # restore. Bail out before touching the user's dnsmasq config: the del_list
+    # calls below would otherwise remove a notinterface=br-lan entry the admin
+    # added for unrelated reasons, and restarting dnsmasq would briefly break
+    # DNS resolution on the whole router.
+    if [ "$split_instance_present" -eq 0 ] && [ "$default_has_podkop_dns" -eq 0 ]; then
+        return 0
+    fi
+
     backup_notinterfaces="$(uci -q get 'dhcp.@dnsmasq[0].podkop_notinterface' 2>/dev/null)"
     if [ -n "$backup_notinterfaces" ]; then
         uci -q delete 'dhcp.@dnsmasq[0].notinterface' >/dev/null 2>&1 || true

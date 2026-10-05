@@ -668,8 +668,8 @@ validate_nfqws_strategy() {
     local context="$2"
 
     if ! check_nfqws_strategy "$raw_opt"; then
-        log "$context uses invalid NFQWS strategy: $NFQWS_VALIDATE_ERROR Aborted." "fatal"
-        exit 1
+        log "$context uses invalid NFQWS strategy: $NFQWS_VALIDATE_ERROR. Rule skipped." "error"
+        return 1
     fi
 }
 
@@ -678,7 +678,7 @@ validate_rule_nfqws_opt() {
     local raw_opt
 
     raw_opt="$(get_rule_nfqws_opt "$section")"
-    validate_nfqws_strategy "$raw_opt" "Zapret rule '$section'"
+    validate_nfqws_strategy "$raw_opt" "Zapret rule '$section'" || return 1
 }
 
 escape_sed_replacement() {
@@ -751,7 +751,7 @@ check_zapret_requirements() {
 
     if ! prepare_zapret_runtime; then
         log "Failed to prepare the K.R.O.T. zapret state directory in $ZAPRET_STATE_DIR. Aborted." "fatal"
-        exit 1
+        return 1
     fi
 }
 
@@ -1277,8 +1277,8 @@ _start_zapret_runtime_handler() {
     done
 
     if ! kill -0 "$pid" 2>/dev/null; then
-        log "nfqws failed to start for rule '$section'. Check $logfile. Aborted." "fatal"
-        exit 1
+        log "nfqws failed to start for rule '$section'. Check $logfile. Rule skipped." "error"
+        return 1
     fi
 
     child_pid="$(cat "$child_pidfile" 2>/dev/null)"
@@ -1293,7 +1293,7 @@ start_zapret_runtime() {
     has_enabled_zapret_rules || return 0
     is_zapret_provider_available || return 0
 
-    check_zapret_requirements
+    check_zapret_requirements || return 1
     mkdir -p "$ZAPRET_PID_DIR" "$ZAPRET_CHILD_PID_DIR" "$ZAPRET_LOG_DIR"
     config_foreach _start_zapret_runtime_handler "section"
 }

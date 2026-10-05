@@ -138,12 +138,35 @@ updates_acquire_component_lock() {
         return 1
     fi
 
-    rm -f "$UPDATES_LOCK_DIR/pid" 2>/dev/null
-    rmdir "$UPDATES_LOCK_DIR" 2>/dev/null || return 1
+    # Stale lock: the owner process is gone. Deleting the whole directory and
+    # recreating it opens a TOCTOU window, so recover in place instead:
+    # 1) drop the stale pid file, 2) hard-link our own into the free slot.
+    # ln(2) fails atomically when the slot was taken between (1) and (2), so
+    # exactly one waiter wins; the losers back off. The final ownership check
+    # makes sure the pid we are releasing later is really ours.
+    rm -f "$UPDATES_LOCK_DIR/pid" 2>/dev/null || true
+    if printf '%s\n' "$$" >"$UPDATES_LOCK_DIR/pid.new.$$" 2>/dev/null; then
+        if ln "$UPDATES_LOCK_DIR/pid.new.$$" "$UPDATES_LOCK_DIR/pid" 2>/dev/null &&
+            [ "$(cat "$UPDATES_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+            rm -f "$UPDATES_LOCK_DIR/pid.new.$$" 2>/dev/null || true
+            UPDATES_LOCK_HELD=1
+            return 0
+        fi
+        rm -f "$UPDATES_LOCK_DIR/pid.new.$$" 2>/dev/null || true
+        return 1
+    fi
 
-    mkdir "$UPDATES_LOCK_DIR" 2>/dev/null || return 1
-    printf '%s\n' "$$" >"$UPDATES_LOCK_DIR/pid"
-    UPDATES_LOCK_HELD=1
+    # Another waiter died between its mkdir and its move into the pid slot,
+    # leaving a corpse subdirectory that would block every future waiter.
+    for pending_dir in "$UPDATES_LOCK_DIR"/pid.*; do
+        [ -d "$pending_dir" ] || continue
+        pending_owner="$(cat "$pending_dir/pid" 2>/dev/null)"
+        [ -n "$pending_owner" ] && kill -0 "$pending_owner" 2>/dev/null && continue
+        rm -rf "$pending_dir" 2>/dev/null || true
+    done
+
+    # Someone else is trying to acquire the lock right now; let it finish.
+    return 1
 }
 
 updates_release_component_lock() {
@@ -1770,7 +1793,12 @@ updates_check_krot() {
     case "$now" in
     '' | *[!0-9]*) now=0 ;;
     esac
-    write_podkop_latest_version_cache "$latest_version" "$now"
+
+    # Only cache a well-formed release version. A malformed latest.json entry
+    # (e.g. "dev") would otherwise poison LuCI with a bogus "update available"
+    # banner for the whole cache lifetime.
+    is_podkop_release_version "$latest_version" &&
+        write_podkop_latest_version_cache "$latest_version" "$now"
 
     if ! is_podkop_release_version "$PODKOP_VERSION"; then
         updates_log "K.R.O.T. current version is not a release version ($PODKOP_VERSION)"

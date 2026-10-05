@@ -222,11 +222,10 @@ sing_box_cf_add_proxy_outbound() {
 
         userinfo=$(url_get_userinfo "$url")
         if ! is_shadowsocks_userinfo_format "$userinfo"; then
-            userinfo=$(base64_decode "$userinfo")
-            if [ $? -ne 0 ]; then
+            userinfo="$(base64_decode "$userinfo")" || {
                 log "Cannot decode shadowsocks userinfo or it does not match the expected format. Aborted." "fatal"
                 exit 1
-            fi
+            }
         fi
 
         tag=$(get_outbound_tag_by_section "$section")

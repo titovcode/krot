@@ -45,10 +45,35 @@ acquire_reload_lock() {
         return 1
     fi
 
-    rm -f "$PODKOP_RELOAD_LOCK_DIR/pid" 2> /dev/null
-    rmdir "$PODKOP_RELOAD_LOCK_DIR" 2> /dev/null || return 1
-    mkdir "$PODKOP_RELOAD_LOCK_DIR" 2> /dev/null || return 1
-    printf '%s\n' "$$" > "$PODKOP_RELOAD_LOCK_DIR/pid"
+    # Stale lock: the owner process is gone. Deleting the whole directory and
+    # recreating it opens a TOCTOU window, so recover in place instead:
+    # 1) drop the stale pid file, 2) hard-link our own into the free slot.
+    # ln(2) fails atomically when the slot was taken between (1) and (2), so
+    # exactly one waiter wins; the losers back off. The final ownership check
+    # makes sure the pid we release later is really ours.
+    rm -f "$PODKOP_RELOAD_LOCK_DIR/pid" 2> /dev/null || true
+    if printf '%s\n' "$$" > "$PODKOP_RELOAD_LOCK_DIR/pid.new.$$" 2>/dev/null; then
+        if ln "$PODKOP_RELOAD_LOCK_DIR/pid.new.$$" "$PODKOP_RELOAD_LOCK_DIR/pid" 2>/dev/null &&
+            [ "$(cat "$PODKOP_RELOAD_LOCK_DIR/pid" 2>/dev/null)" = "$$" ]; then
+            rm -f "$PODKOP_RELOAD_LOCK_DIR/pid.new.$$" 2>/dev/null || true
+            return 0
+        fi
+        rm -f "$PODKOP_RELOAD_LOCK_DIR/pid.new.$$" 2>/dev/null || true
+        return 1
+    fi
+
+    # Another waiter died between its mkdir and its ln into the pid slot,
+    # leaving a corpse subdirectory that would otherwise block every future
+    # waiter until reboot. Clean up corpses whose owner is gone.
+    for pending_dir in "$PODKOP_RELOAD_LOCK_DIR"/pid.*; do
+        [ -d "$pending_dir" ] || continue
+        pending_owner="$(cat "$pending_dir/pid" 2>/dev/null)"
+        [ -n "$pending_owner" ] && kill -0 "$pending_owner" 2>/dev/null && continue
+        rm -rf "$pending_dir" 2>/dev/null || true
+    done
+
+    # Someone else is trying to acquire the lock right now; let it finish.
+    return 1
 }
 
 release_reload_lock() {
@@ -210,19 +235,20 @@ reload_service() {
         return 0
     fi
 
-    # Use subshell to ensure trap cleanup happens before we proceed
+    # Run the reload in a subshell that owns the lock via its EXIT trap; the
+    # exit status propagates directly to this shell. No shared status file:
+    # writing one inside the lock directory left the directory un-rmdir-able at
+    # trap time, and the follow-up unconditional release could then steal the
+    # lock (and the status) from the next waiter.
+    status=0
     (
         trap 'release_reload_lock' EXIT INT TERM
         "$PODKOP_BIN" reload "$reason" > /dev/null 2>&1
-        printf '%s' "$?" > "${PODKOP_RELOAD_LOCK_DIR}/status"
-    )
-    status="$(cat "${PODKOP_RELOAD_LOCK_DIR}/status" 2>/dev/null || echo 1)"
-    rm -f "${PODKOP_RELOAD_LOCK_DIR}/status" 2>/dev/null
+    ) || status=$?
 
     if [ "$status" -eq 0 ] && is_config_change_reload "$reason"; then
         sync_service_triggers
     fi
-    release_reload_lock
     run_pending_reload_if_requested
 
     return "$status"

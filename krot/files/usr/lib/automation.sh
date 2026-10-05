@@ -13,8 +13,9 @@ check_and_restart() {
     # Skip if K.R.O.T. is busy with reload or subscription update (prevents lock conflicts)
     [ -d /var/run/krot.reload.lock ] && return 0
     [ -d /var/run/krot/subscription-update.lock ] && return 0
+    # component-action.lock is a directory created by mkdir; the -f test below
+    # was dead code (it can never match a directory) and has been removed.
     [ -d /var/run/krot/component-action.lock ] && return 0
-    [ -f /var/run/krot/component-action.lock ] && return 0
     
     config_get enabled "$section" automation_enabled "0"
     [ "$enabled" = "1" ] || return 0
@@ -59,17 +60,24 @@ check_and_restart() {
             
             # Wait for interface and K.R.O.T. to stabilize (prevents "component action already running" errors)
             sleep 30
-            
-            # Clean up any stale locks and jobs left by K.R.O.T. restart triggered by ifdown/ifup
-            rm -rf /var/run/krot/component-action.lock \
-                   /var/run/krot.reload.lock \
-                   /var/run/krot/subscription-update.lock 2>/dev/null || true
-            
+
+            # Remove stale locks left by the K.R.O.T. restart triggered by
+            # ifdown/ifup. Only drop a lock whose owning process is gone, so a
+            # reload/update that is still running keeps its lock.
+            for lock_dir in /var/run/krot/component-action.lock \
+                            /var/run/krot.reload.lock \
+                            /var/run/krot/subscription-update.lock; do
+                [ -d "$lock_dir" ] || continue
+                lock_owner="$(sed -n '1p' "$lock_dir/pid" 2>/dev/null)"
+                if [ -n "$lock_owner" ] && kill -0 "$lock_owner" 2>/dev/null; then
+                    logger -t krot-automation "Rule '$section': lock $lock_dir still held by PID $lock_owner after restart; leaving it in place"
+                    continue
+                fi
+                rm -rf "$lock_dir" 2>/dev/null || true
+            done
+
             # Remove stale component action jobs (older than 5 minutes)
             find /var/run/krot/component-actions -name "*.json" -mmin +5 -delete 2>/dev/null || true
-            
-            # Kill any hanging krot/curl processes that might hold locks
-            killall -9 krot curl 2>/dev/null || true
         fi
     else
         if [ -f "$state_file" ]; then

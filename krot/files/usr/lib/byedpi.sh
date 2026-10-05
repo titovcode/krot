@@ -128,7 +128,7 @@ check_byedpi_requirements() {
 
     if ! prepare_byedpi_runtime; then
         log "Failed to prepare the K.R.O.T. ByeDPI state directory in $BYEDPI_STATE_DIR. Aborted." "fatal"
-        exit 1
+        return 1
     fi
 }
 
@@ -416,11 +416,11 @@ validate_byedpi_strategy() {
 
     if ! check_byedpi_strategy "$raw_opt"; then
         if [ -n "$context" ]; then
-            log "$context: $BYEDPI_VALIDATE_ERROR" "fatal"
+            log "$context: $BYEDPI_VALIDATE_ERROR. Rule skipped." "error"
         else
-            log "$BYEDPI_VALIDATE_ERROR" "fatal"
+            log "$BYEDPI_VALIDATE_ERROR. Rule skipped." "error"
         fi
-        exit 1
+        return 1
     fi
 }
 
@@ -544,13 +544,13 @@ _start_byedpi_runtime_handler() {
 
     index="$(get_byedpi_rule_index "$section")"
     if [ "${index:-0}" -le 0 ]; then
-        log "Unable to resolve ByeDPI index for rule '$section'. Aborted." "fatal"
-        exit 1
+        log "Unable to resolve ByeDPI index for rule '$section'. Rule skipped." "error"
+        return 1
     fi
 
     port="$(get_byedpi_rule_port "$index")"
     raw_opt="$(get_rule_byedpi_cmd_opts "$section")"
-    validate_byedpi_strategy "$raw_opt" "Invalid ByeDPI strategy for rule '$section'"
+    validate_byedpi_strategy "$raw_opt" "Invalid ByeDPI strategy for rule '$section'" || return 1
 
     pidfile="$BYEDPI_PID_DIR/$section.pid"
     child_pidfile="$BYEDPI_CHILD_PID_DIR/$section.pid"
@@ -563,8 +563,8 @@ _start_byedpi_runtime_handler() {
     sleep 1
 
     if ! kill -0 "$pid" 2>/dev/null; then
-        log "ciadpi failed to start for rule '$section'. Check $logfile. Aborted." "fatal"
-        exit 1
+        log "ciadpi failed to start for rule '$section'. Check $logfile. Rule skipped." "error"
+        return 1
     fi
 
     child_pid="$(cat "$child_pidfile" 2>/dev/null)"
@@ -589,11 +589,11 @@ start_byedpi_runtime() {
         sleep 1
         if is_byedpi_standalone_service_running; then
             log "Standalone byedpi service is still running and may conflict with K.R.O.T.-managed ciadpi runtime. Aborted." "fatal"
-            exit 1
+            return 1
         fi
     fi
 
-    check_byedpi_requirements
+    check_byedpi_requirements || return 1
     mkdir -p "$BYEDPI_PID_DIR" "$BYEDPI_CHILD_PID_DIR" "$BYEDPI_LOG_DIR"
     config_foreach _start_byedpi_runtime_handler "section"
 }

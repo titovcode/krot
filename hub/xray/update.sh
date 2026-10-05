@@ -67,6 +67,7 @@ esac
 # per-rule Xray fragments rendered by K.R.O.T. — never remove or rewrite them
 # here, only make sure the directory exists so the service can start.
 mkdir -p /etc/xray/conf.d
+mkdir -p /opt/xray
 
 msg "Fetching latest Xray-core release info..."
 release_json="$(http_get "https://api.github.com/repos/XTLS/Xray-core/releases/latest" 2>/dev/null || true)"
@@ -76,6 +77,18 @@ if [ -n "$release_json" ]; then
 fi
 tag_name="${tag_name:-v26.3.27}"
 
+# A hardcoded fallback tag must never silently downgrade a newer install (this
+# path exists precisely because GitHub may be unreachable).
+current_version=""
+[ -r /etc/xray/VERSION ] && current_version="$(cat /etc/xray/VERSION 2>/dev/null)"
+if [ -n "${tag_name#v}" ] && [ -n "$current_version" ]; then
+    newest="$(printf '%s\n' "${current_version#v}" "${tag_name#v}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+    if [ "$newest" = "${current_version#v}" ] && [ "$current_version" != "${tag_name#v}" ]; then
+        msg "Installed Xray-core $current_version is newer than the fallback tag; nothing to update"
+        exit 0
+    fi
+fi
+
 download_url="https://github.com/XTLS/Xray-core/releases/download/${tag_name}/Xray-linux-${XRAY_ARCH}.zip"
 msg "Downloading Xray-core (${tag_name}, ${XRAY_ARCH})..."
 
@@ -83,11 +96,33 @@ if http_download "$download_url" "$TMP_DIR/xray.zip" 2>/dev/null && [ -s "$TMP_D
     if command -v unzip >/dev/null 2>&1; then
         unzip -q -o "$TMP_DIR/xray.zip" xray -d "$TMP_DIR" 2>/dev/null || unzip -q -o "$TMP_DIR/xray.zip" -d "$TMP_DIR"
         if [ -f "$TMP_DIR/xray" ]; then
-            cp "$TMP_DIR/xray" /usr/bin/xray
+            chmod 0755 "$TMP_DIR/xray"
+            # A new binary must pass its config parse before it goes live; a
+            # broken download must never replace a working core.
+            if ! "$TMP_DIR/xray" run -test -confdir /etc/xray >/dev/null 2>&1 &&
+               ! "$TMP_DIR/xray" version >/dev/null 2>&1; then
+                fail "Downloaded Xray binary is not runnable; aborting"
+            fi
+            # Replace via rename: `cp` onto the running binary fails with
+            # ETXTBSY (Text file busy) while the service is up.
+            backup=""
+            if [ -f /usr/bin/xray ]; then
+                backup="$TMP_DIR/xray.old"
+                cp /usr/bin/xray "$backup"
+            fi
+            mv -f "$TMP_DIR/xray" /usr/bin/xray
             chmod 0755 /usr/bin/xray
             mkdir -p /etc/xray
             echo "${tag_name#v}" > /etc/xray/VERSION
-            /etc/init.d/xray restart 2>/dev/null || true
+            if ! /etc/init.d/xray restart 2>/dev/null; then
+                if [ -n "$backup" ] && "$backup" version >/dev/null 2>&1; then
+                    cp "$backup" /usr/bin/xray
+                    chmod 0755 /usr/bin/xray
+                    [ -n "$current_version" ] && echo "${current_version#v}" > /etc/xray/VERSION
+                    /etc/init.d/xray restart 2>/dev/null || true
+                fi
+                fail "Xray failed to restart with the new binary; rolled back"
+            fi
             msg "Xray-core updated to ${tag_name}"
             exit 0
         fi

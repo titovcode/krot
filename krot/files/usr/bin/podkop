@@ -2633,8 +2633,16 @@ rebuild_nft_runtime() {
         nft delete table inet "$NFT_TABLE_NAME"
     fi
 
-    route_table_rule_mark
-    create_nft_rules
+    # Fatal on failure: the service keeps running otherwise, but with the
+    # filtering table deleted and never rebuilt.
+    route_table_rule_mark || {
+        log "Failed to set up the tproxy route/marking rule. Aborted." "error"
+        return 1
+    }
+    create_nft_rules || {
+        log "Failed to create nft rules. Aborted." "error"
+        return 1
+    }
 }
 
 refresh_list_update_cron() {
@@ -3810,8 +3818,10 @@ check_requirements() {
         log "No proxy outbound sections found. K.R.O.T. will use direct and/or provider-only routing." "warn"
     fi
 
-    check_zapret_requirements
-    check_byedpi_requirements
+    # A provider requirement failure is fatal for the whole start: byedpi/
+    # zapret handlers already log the offending rule and skip only that rule.
+    check_zapret_requirements || return 1
+    check_byedpi_requirements || return 1
 }
 
 _check_outbound_node() {
@@ -3899,9 +3909,16 @@ start_main() {
     # starts, so a module's sidecar is listening when traffic begins flowing.
     deploy_module_rule_configs
 
-    # base
-    route_table_rule_mark
-    create_nft_rules
+    # base — each failure is fatal: continuing would leave the service
+    # "running" with no tproxy filtering (or a rolled-back empty table).
+    route_table_rule_mark || {
+        log "Failed to set up the tproxy route/marking rule. Aborted." "fatal"
+        return 1
+    }
+    create_nft_rules || {
+        log "Failed to create nft rules. Aborted." "fatal"
+        return 1
+    }
     sing_box_configure_service
 
     # sing-box
@@ -3924,6 +3941,7 @@ start_main() {
 
 stop_main() {
     local status=0
+    local pid
 
     log "Stopping K.R.O.T."
 
@@ -3931,8 +3949,14 @@ stop_main() {
     stop_deferred_subscription_bootstrap_retry_worker
 
     if [ -f /var/run/podkop_list_update.pid ]; then
-        pid=$(cat /var/run/podkop_list_update.pid)
-        if kill -0 "$pid" 2> /dev/null; then
+        pid="$(cat /var/run/podkop_list_update.pid 2> /dev/null)"
+        # The updater is either a subshell of "/bin/ash /usr/bin/krot start"
+        # (background launch from start/reload) or a cron child running
+        # "krot list_update_if_due". Accept either shape; the cmdline check
+        # avoids killing an unrelated process when the PID was recycled.
+        if [ -n "$pid" ] &&
+            { _pid_file_points_to_expected_process "$pid" "krot list_update" ||
+              _pid_file_points_to_expected_process "$pid" "/usr/bin/krot"; }; then
             kill "$pid" 2> /dev/null
             log "Stopped list_update"
         fi
@@ -3963,6 +3987,10 @@ stop_main() {
 
     log "Cleanup VPN policy routing"
     cleanup_all_vpn_policy_routing
+
+    # Remove the sidecar egress rule/table too: setup runs per sidecar rule at
+    # render time, but nothing else ever cleans it up on stop.
+    cleanup_sidecar_egress_policy_routing 2>/dev/null || true
 
     log "Stop sing-box"
     /etc/init.d/sing-box stop || status="$?"
@@ -4013,7 +4041,14 @@ start_failure_cleanup() {
         ip route flush table "$RT_TABLE_NAME" 2>/dev/null || true
     fi
     cleanup_all_vpn_policy_routing 2>/dev/null || true
+    # Sidecar egress rules/routes leak just like the VPN ones on a failed
+    # start; remove them along with the rest of the network state.
+    cleanup_sidecar_egress_policy_routing 2>/dev/null || true
     /etc/init.d/sing-box stop >/dev/null 2>&1 || true
+
+    # Cron jobs were already re-armed by start_main before the failure point;
+    # stop them the same way a full stop would.
+    remove_cron_job 2>/dev/null || true
 
     # Always restore dnsmasq so the router does not keep pointing at a dead K.R.O.T. DNS.
     if ! dnsmasq_split_has_podkop_dns; then
@@ -4078,12 +4113,21 @@ stop() {
 }
 
 restart_runtime_for_reload() {
-    local dont_touch_dhcp
+    local dont_touch_dhcp status
 
     log "Reload fallback: restart K.R.O.T. runtime in-process"
 
     stop_main
-    start_main
+
+    # Reuse the guarded start path: start() installs the fail-cleanup trap, so
+    # a failed start rolls back nft/rules/routes and restores dnsmasq instead
+    # of leaving the router with a dead DNS target and no filtering.
+    start
+    status="$?"
+    if [ "$status" -ne 0 ]; then
+        dnsmasq_restore_fail_safe 2>/dev/null || true
+        return "$status"
+    fi
 
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
     if [ "$dont_touch_dhcp" -eq 0 ]; then
@@ -4323,14 +4367,26 @@ restart() {
 
     log "K.R.O.T. restart"
 
+    # Install the same fail-cleanup trap as start(): if the startup half fails,
+    # the router keeps working (nft/rules/routes rolled back, dnsmasq restored)
+    # instead of being left with a dead DNS target and no filtering.
+    trap 'start_failure_cleanup "$?"' EXIT INT TERM
+
     stop_impl
     status="$?"
     if [ "$status" -ne 0 ]; then
+        start_failure_cleanup "$status"
         return "$status"
     fi
 
     start_impl
     status="$?"
+    if [ "$status" -ne 0 ]; then
+        start_failure_cleanup "$status"
+        return "$status"
+    fi
+
+    trap - EXIT INT TERM
 
     [ "$status" -eq 0 ] && podkop_is_stably_running && run_pending_reload_if_requested
     return "$status"
@@ -4722,7 +4778,8 @@ process_validate_rule() {
             return 0
         fi
 
-        validate_rule_nfqws_opt "$section"
+        # One bad strategy must not abort the whole start: log, skip this rule.
+        validate_rule_nfqws_opt "$section" || return 0
     fi
 
     if [ "$action" = "byedpi" ]; then
@@ -4738,7 +4795,8 @@ process_validate_rule() {
             return 0
         fi
 
-        validate_byedpi_strategy "$(get_rule_byedpi_cmd_opts "$section")" "Invalid ByeDPI strategy for rule '$section'"
+        # One bad strategy must not abort the whole start: log, skip this rule.
+        validate_byedpi_strategy "$(get_rule_byedpi_cmd_opts "$section")" "Invalid ByeDPI strategy for rule '$section'" || return 0
     fi
 
     if [ "$action" = "proxy" ]; then
@@ -5975,7 +6033,7 @@ list_update() {
     echolog "Starting lists update..."
 
     local pidfile="/var/run/podkop_list_update.pid"
-    local existing_pid
+    local existing_pid my_pid
     if [ -f "$pidfile" ]; then
         existing_pid=$(cat "$pidfile" 2> /dev/null)
         if [ -n "$existing_pid" ] && [ "$existing_pid" != "$$" ] && kill -0 "$existing_pid" 2> /dev/null; then
@@ -5986,9 +6044,12 @@ list_update() {
 
     # $$ inside a BusyBox ash background subshell still expands to the parent
     # service PID, so record the real updater PID via a child's PPID instead.
-    echo "$(sh -c 'echo $PPID' 2> /dev/null)" > "$pidfile"
-    trap 'rm -f "$pidfile"' EXIT
-    trap 'rm -f "$pidfile"; exit 130' INT TERM
+    my_pid="$(sh -c 'echo $PPID' 2> /dev/null)"
+    echo "$my_pid" > "$pidfile"
+    # Only remove the pidfile on exit if it still belongs to this run: a newer
+    # updater may have overwritten the entry after we recorded ours.
+    trap 'grep -qxF "$my_pid" "$pidfile" 2>/dev/null && rm -f "$pidfile"' EXIT
+    trap 'grep -qxF "$my_pid" "$pidfile" 2>/dev/null && rm -f "$pidfile"; exit 130' INT TERM
 
     local nslookup_timeout=3
     local nslookup_attempts=10
@@ -11338,13 +11399,24 @@ write_podkop_latest_version_cache() {
     local value="$1"
     local timestamp="$2"
     local cache_file="/tmp/krot.latest-version.cache"
+    local tmp_file
 
     [ -n "$value" ] || return 0
 
+    # Write atomically (temp file + rename) so a concurrent reader can never
+    # observe a half-written cache and expose a truncated version in LuCI.
+    tmp_file="$(mktemp "$cache_file.XXXXXX" 2>/dev/null)" || return 1
     {
         printf '%s\n' "$value"
         printf '%s\n' "$timestamp"
-    } > "$cache_file"
+    } > "$tmp_file" 2>/dev/null || {
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 1
+    }
+    mv "$tmp_file" "$cache_file" 2>/dev/null || {
+        rm -f "$tmp_file" 2>/dev/null || true
+        return 1
+    }
 }
 
 get_cached_podkop_latest_version() {
