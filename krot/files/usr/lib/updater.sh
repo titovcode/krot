@@ -1206,6 +1206,11 @@ updates_resolve_krot_release() {
     release_json="$(updates_fetch_github_release_json "$owner" "$repo")" || return 1
     [ -n "$release_json" ] || return 1
     release_tag="$(printf '%s' "$release_json" | json_utils_ucode object-get-default tag_name "" 2>/dev/null)"
+    # fetch_latest_podkop_version strips the leading "v" (v0.1.0.8 and
+    # 0.1.0.8 mean the same release), so accept both tag conventions here.
+    case "$release_tag" in
+    v*) release_tag="${release_tag#v}" ;;
+    esac
     [ "$release_tag" = "$latest_version" ] || return 1
     UPDATES_PODKOP_RELEASE_URL="$(printf '%s' "$release_json" | json_utils_ucode object-get-default html_url "" 2>/dev/null)"
 
