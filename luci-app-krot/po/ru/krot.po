@@ -287,6 +287,9 @@ msgstr "Временно недоступно"
 msgid "Dashboard"
 msgstr "Дашборд"
 
+msgid "Modules"
+msgstr "Модули"
+
 msgid "Dashboard currently unavailable"
 msgstr "Дашборд сейчас недоступен"
 
