@@ -194,6 +194,78 @@ function configureGridSection(sectionRef, type, title, addTitle) {
       );
     };
   }
+
+  // Add Name column with drag handle before other columns
+  const origRenderContents = sectionRef.renderContents;
+  sectionRef.renderContents = function (cfgsections, nodes) {
+    const result = origRenderContents.apply(this, arguments);
+    if (result && typeof result.then === 'function') {
+      return result.then((sectionEl) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => addNameColumnWithDrag(sectionEl)));
+        return sectionEl;
+      });
+    }
+    requestAnimationFrame(() => requestAnimationFrame(() => addNameColumnWithDrag(result)));
+    return result;
+  }.bind(sectionRef);
+}
+
+function addNameColumnWithDrag(sectionEl) {
+  if (!sectionEl || sectionEl.dataset.nameColumnAdded) return;
+  sectionEl.dataset.nameColumnAdded = '1';
+
+  const table = sectionEl.querySelector('.cbi-section-table');
+  if (!table) return;
+
+  // Hide CSS-generated name pseudo-element and fix cell alignment
+  const style = document.createElement('style');
+  style.textContent = `
+    .cbi-section-table-titles.named::before,
+    .cbi-section-table-descr.named::before,
+    .cbi-section-table-row[data-title]::before {
+      display: none !important;
+    }
+    .table.cbi-section-table .td.cbi-section-table-cell {
+      text-align: left !important;
+    }
+  `;
+  sectionEl.appendChild(style);
+
+  // Add Name header
+  const theadTr = table.querySelector('.cbi-section-table-titles');
+  if (theadTr) {
+    const nameTh = document.createElement('th');
+    nameTh.className = 'th cbi-section-table-cell';
+    nameTh.textContent = _('Name');
+    theadTr.insertBefore(nameTh, theadTr.firstChild);
+  }
+
+  // Add Name cell with drag handle to each row
+  const rows = table.querySelectorAll('.cbi-section-table-row:not(.placeholder)');
+  rows.forEach((trEl) => {
+    const sectionId = trEl.dataset.sid;
+    const sectionName = trEl.dataset.title || sectionId;
+
+    // Get drag handle from actions
+    const actionsTd = trEl.querySelector('.cbi-section-actions');
+    const dragBtn = actionsTd ? actionsTd.querySelector('.drag-handle') : null;
+
+    // Create name td
+    const nameTd = document.createElement('td');
+    nameTd.className = 'td cbi-section-table-cell';
+    nameTd.style.cssText = 'white-space:nowrap;vertical-align:middle;font-weight:bold;';
+
+    if (dragBtn) {
+      dragBtn.style.marginRight = '10px';
+      nameTd.appendChild(dragBtn);
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = sectionName;
+    nameTd.appendChild(nameSpan);
+
+    trEl.insertBefore(nameTd, trEl.firstChild);
+  });
 }
 
 const EntryPoint = {
