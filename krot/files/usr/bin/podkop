@@ -6076,6 +6076,29 @@ list_update() {
         return 1
     fi
 
+    # Check if selected proxy/VPN section is running before attempting download
+    download_lists_via_proxy_section=
+    config_get download_lists_via_proxy_section settings download_lists_via_proxy_section
+    if [ -n "$download_lists_via_proxy_section" ]; then
+        section_action=
+        config_get section_action "$download_lists_via_proxy_section" action
+        service_running=0
+        if [ "$section_action" = "xray" ]; then
+            pgrep -f "xray run" > /dev/null 2>&1 && service_running=1
+        elif [ "$section_action" = "proxy" ] || [ "$section_action" = "outbound" ]; then
+            pgrep -f "sing-box run" > /dev/null 2>&1 && service_running=1
+        elif [ "$section_action" = "vpn" ]; then
+            vpn_interface=
+            config_get vpn_interface "$download_lists_via_proxy_section" interface
+            if [ -n "$vpn_interface" ] && ip link show "$vpn_interface" 2>/dev/null | grep -q "state UP"; then
+                service_running=1
+            fi
+        fi
+        if [ "$service_running" -eq 0 ]; then
+            echolog "Warning: Section $download_lists_via_proxy_section not running, trying direct"
+            uci set krot.settings.download_lists_via_proxy=0
+        fi
+    fi
     # Github Check
     ok=0
     for i in $(seq 1 $curl_attempts); do

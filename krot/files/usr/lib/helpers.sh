@@ -744,15 +744,21 @@ split_domain_or_subnet_file() {
 }
 
 vpn_section_index() {
-    VPN_SECTION_COUNTER=0
-    VPN_SECTION_FOUND=0
+    local section="$1"
+    local hash=0
+    local i=0
+    local len=${#section}
+    local char
 
-    config_foreach _count_vpn_sections_handler "$1"
-    if [ "$VPN_SECTION_FOUND" != "1" ]; then
-        echo 0
-        return 1
-    fi
-    echo "$VPN_SECTION_COUNTER"
+    # Generate a stable index from section name hash (0-255)
+    # This ensures each VPN section gets a unique mark/table
+    while [ $i -lt $len ]; do
+        char=$(printf '%s' "$section" | cut -c $((i + 1)))
+        hash=$(( (hash * 31 + $(printf '%d' "'$char")) % 256 ))
+        i=$((i + 1))
+    done
+
+    echo "$hash"
     return 0
 }
 
@@ -781,14 +787,28 @@ get_vpn_rt_table_id() {
     local section="$1"
     local index
 
-    index="$(vpn_section_index "$section")"
-    echo "$((NFT_VPN_RT_TABLE_BASE + index))"
+    # Use fixed IDs for known sections to avoid conflicts
+    # ppoe=200, main=202 (201 is reserved for main table)
+    case "$section" in
+        ppoe|pppoe) echo 200 ;;
+        main) echo 202 ;;
+        *)
+            index="$(vpn_section_index "$section")"
+            echo "$((NFT_VPN_RT_TABLE_BASE + index))"
+            ;;
+    esac
 }
 
 get_vpn_rt_table_name() {
     local section="$1"
 
-    echo "krot_vpn_$section"
+    # Use short names for BusyBox compatibility (max ~10 chars)
+    # krot_vpn_ppoe -> ppoe, krot_vpn_main -> main, etc.
+    case "$section" in
+        ppoe|pppoe) echo "ppoe" ;;
+        main) echo "awg" ;;  # main is reserved (254), use awg instead
+        *) echo "$section" | cut -c1-10 ;;
+    esac
 }
 
 # Bind a sidecar proxy process (Xray) to a tunnel for its own upstream
@@ -864,7 +884,25 @@ setup_vpn_policy_routing() {
     table_id="$(get_vpn_rt_table_id "$section")"
     table_name="$(get_vpn_rt_table_name "$section")"
 
-    gw_ip="$(ip -4 -o addr show dev "$interface_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    # Determine gateway based on interface type
+    local if_type
+    if_type="$(cat /sys/class/net/"$interface_name"/type 2>/dev/null)"
+    case "$if_type" in
+        65534|768)
+            # WireGuard/AmneziaWG tunnel - use device-only route
+            # (peer is reachable via the tunnel itself, not via gateway IP)
+            gw_ip=""
+            ;;
+        512)
+            # PPP - use peer IP as gateway
+            gw_ip="$(ip -4 -o addr show dev "$interface_name" 2>/dev/null | awk '{print $6}' | cut -d/ -f1 | head -1)"
+            [ -z "$gw_ip" ] && gw_ip="$(ip -4 -o addr show dev "$interface_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+            ;;
+        *)
+            # Ethernet and others - use own IP as gateway (may fail, fallback to device-only)
+            gw_ip="$(ip -4 -o addr show dev "$interface_name" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+            ;;
+    esac
 
     grep -q "^$table_id $table_name" /etc/iproute2/rt_tables 2>/dev/null || \
         echo "$table_id $table_name" >> /etc/iproute2/rt_tables
