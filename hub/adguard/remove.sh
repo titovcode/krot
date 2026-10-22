@@ -55,6 +55,16 @@ rm -rf /opt/AdGuardHome.yaml 2>/dev/null || true
 
 # Restore K.R.O.T. DNS to what the user had before AdGuard was installed
 restore_krot_dns
+
+# Re-enable avahi-daemon if it was present before install (install.sh
+# disabled it to free UDP port 5353). Only do this if the init script
+# still exists and the daemon was not manually disabled by the user.
+if [ -x /etc/init.d/avahi-daemon ]; then
+    msg "Re-enabling avahi-daemon..."
+    /etc/init.d/avahi-daemon enable 2>/dev/null || true
+    /etc/init.d/avahi-daemon start 2>/dev/null || true
+fi
+
 # K.R.O.T. will be restarted by the Hub installer (updater.sh) so sing-box
 # picks up the restored dns_server / dns_type. No restart here.
 

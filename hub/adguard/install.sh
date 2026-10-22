@@ -215,6 +215,19 @@ YAML
     chmod 0444 "$CONFIG_FILE"
 fi
 
+# avahi-daemon (mDNS/Bonjour) binds UDP port 5353 on OpenWrt by default.
+# That collides with AdGuard Home's own 5353 listener, so we must stop and
+# disable avahi before starting AdGuard. mDNS is rarely used on a home
+# router; users who need it can re-enable it after moving AdGuard to a
+# different port.
+if [ -x /etc/init.d/avahi-daemon ]; then
+    msg "Stopping avahi-daemon (frees UDP port 5353 for AdGuard)..."
+    /etc/init.d/avahi-daemon stop 2>/dev/null || true
+    /etc/init.d/avahi-daemon disable 2>/dev/null || true
+fi
+# In case avahi is already running but the init script is missing
+killall avahi-daemon 2>/dev/null || true
+
 # Install as service (create init script manually - AdGuard's -s install
 # creates /etc/init.d/AdGuardHome which may conflict and doesn't work reliably
 # on all OpenWrt versions)
