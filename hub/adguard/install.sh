@@ -147,9 +147,13 @@ dns:
   # Use Cloudflare (1.1.1.1) as bootstrap to resolve DoH/DoT hostnames
   # before the encrypted upstream is reachable. Without this, AdGuard
   # cannot dial "1.1.1.1" by name when upstream_dns uses https:// or tls://.
-  bootstrap_dns:
-    - 1.1.1.1
-    - 1.0.0.1
+  #
+  # NOTE: use flow-style list here. AdGuard Home v0.107 has a bug where
+  # a block-style bootstrap_dns list is rewritten as a nested list
+  # ("- - 1.1.1.1") on first startup, which then fails to parse and the
+  # daemon crash-loops. The inline form survives the round-trip.
+  # See https://github.com/AdguardTeam/AdGuardHome/issues/4067
+  bootstrap_dns: ["1.1.1.1", "1.0.0.1"]
   allowed_clients: []
   disallowed_clients: []
   blocked_hosts:
@@ -202,7 +206,13 @@ statistics:
   interval: 24h0m0s
   size_memory: 1000
 YAML
-    chmod 0644 "$CONFIG_FILE"
+    # Make the config read-only. AdGuard Home v0.107 rewrites the YAML on
+    # first start and corrupts block-style lists such as bootstrap_dns
+    # (turns "- 1.1.1.1" into "- - 1.1.1.1"), which then crash-loops the
+    # daemon. AdGuard logs a warning about the unwritable file but still
+    # starts and serves normally. Users can still edit settings via the
+    # web UI by manually running: chmod 0644 $CONFIG_FILE
+    chmod 0444 "$CONFIG_FILE"
 fi
 
 # Install as service (create init script manually - AdGuard's -s install
