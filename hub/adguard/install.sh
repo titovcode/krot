@@ -256,7 +256,8 @@ if command -v uci >/dev/null 2>&1; then
     # Remember the user's previous DNS settings so remove.sh can restore them.
     PREV_DNS_SERVER="$(uci -q get krot.settings.dns_server 2>/dev/null || true)"
     PREV_DNS_TYPE="$(uci -q get krot.settings.dns_type 2>/dev/null || true)"
-    if [ "$PREV_DNS_SERVER" != "127.0.0.1:5353" ]; then
+    # Save previous DNS only if not already saved (prevents overwriting on reinstall)
+    if [ -z "$(uci -q get krot.settings.adguard_prev_dns_server 2>/dev/null)" ]; then
         uci -q set krot.settings.adguard_prev_dns_server="$PREV_DNS_SERVER"
         uci -q set krot.settings.adguard_prev_dns_type="$PREV_DNS_TYPE"
     fi
