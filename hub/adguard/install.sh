@@ -111,6 +111,10 @@ CONFIG_FILE="/opt/AdGuardHome/AdGuardHome.yaml"
 if [ ! -f "$CONFIG_FILE" ]; then
     msg "Pre-seeding AdGuard Home config (bind 127.0.0.1:5353)..."
     cat > "$CONFIG_FILE" <<'YAML'
+# Tell AdGuard Home this config is already at schema version 34 so it
+# skips the migration step. The migration is what corrupts block-style
+# lists like bootstrap_dns (rewrites them as "- - 1.1.1.1").
+schema_version: 34
 http:
   address: 0.0.0.0:3000
   session_ttl: 720h0m0s
