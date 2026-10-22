@@ -121,9 +121,6 @@ upstream_dns:
   - https://1.0.0.1/dns-query
   - tls://1.1.1.1
 upstream_mode: load_balance
-bootstrap_dns:
-  - 1.1.1.1
-  - 1.0.0.1
 filtering:
   filtering_enabled: true
   filters_update_interval: 24
@@ -208,14 +205,38 @@ YAML
     chmod 0644 "$CONFIG_FILE"
 fi
 
-# Install as service
+# Install as service (create init script manually - AdGuard's -s install
+# creates /etc/init.d/AdGuardHome which may conflict and doesn't work reliably
+# on all OpenWrt versions)
 msg "Installing AdGuard Home service..."
-/opt/AdGuardHome/AdGuardHome -s install 2>/dev/null || true
-/opt/AdGuardHome/AdGuardHome -s start 2>/dev/null || true
+cat > /etc/init.d/adguardhome << 'INITEOF'
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /opt/AdGuardHome/AdGuardHome -s run
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+stop_service() {
+    /opt/AdGuardHome/AdGuardHome -s stop 2>/dev/null || true
+}
+INITEOF
+chmod +x /etc/init.d/adguardhome
+/etc/init.d/adguardhome enable 2>/dev/null || true
+/etc/init.d/adguardhome start 2>/dev/null || true
 
 # Wait briefly for AdGuard to come up so the next UCI reload can pick it up
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if /opt/AdGuardHome/AdGuardHome -s status 2>/dev/null | grep -q 'running'; then
+    if netstat -tln 2>/dev/null | grep -q ':5353 '; then
         break
     fi
     sleep 1

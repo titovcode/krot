@@ -36,9 +36,17 @@ if [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
 fi
 
 msg "Stopping AdGuard Home..."
+/etc/init.d/adguardhome stop 2>/dev/null || true
+/etc/init.d/AdGuardHome stop 2>/dev/null || true
 /opt/AdGuardHome/AdGuardHome -s stop 2>/dev/null || true
+# Kill any remaining processes (binary may be deleted but still running)
+killall AdGuardHome 2>/dev/null || true
+sleep 1
 
 msg "Uninstalling AdGuard Home service..."
+/etc/init.d/adguardhome disable 2>/dev/null || true
+rm -f /etc/init.d/adguardhome
+rm -f /etc/init.d/AdGuardHome
 /opt/AdGuardHome/AdGuardHome -s uninstall 2>/dev/null || true
 
 msg "Removing AdGuard Home files..."
