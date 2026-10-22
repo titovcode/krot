@@ -36,7 +36,7 @@ NFT_OUTBOUND_MARK="0x00200000"
 # so VPN marks (base + section index) never match the proxy chain's
 # "meta mark & 0x00100000 == 0x00100000" TProxy rule.
 NFT_VPN_MARK_BASE="0x00400000"
-NFT_VPN_RT_TABLE_BASE=1000
+NFT_VPN_RT_TABLE_BASE=100
 
 # Egress mark/route table used to bind a sidecar proxy (Xray) process to a
 # tunnel. A sidecar runs as a local process, so its own upstream connection
@@ -44,7 +44,7 @@ NFT_VPN_RT_TABLE_BASE=1000
 # which fails whenever the proxy server is only reachable inside a tunnel.
 # Base bit (23) stays disjoint from the fakeip/outbound/VPN marks above.
 NFT_SIDECAR_EGRESS_MARK="0x00800000"
-NFT_SIDECAR_EGRESS_RT_TABLE=1099
+NFT_SIDECAR_EGRESS_RT_TABLE=110
 
 ## sing-box
 SB_REQUIRED_VERSION="1.12.0"

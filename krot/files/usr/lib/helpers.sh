@@ -786,6 +786,7 @@ get_vpn_mark() {
 get_vpn_rt_table_id() {
     local section="$1"
     local index
+    local id
 
     # Use fixed IDs for known sections to avoid conflicts
     # ppoe=200, main=202 (201 is reserved for main table)
@@ -794,7 +795,11 @@ get_vpn_rt_table_id() {
         main) echo 202 ;;
         *)
             index="$(vpn_section_index "$section")"
-            echo "$((NFT_VPN_RT_TABLE_BASE + index))"
+            id=$((NFT_VPN_RT_TABLE_BASE + index))
+            # rt_tables only supports values 0-255. Clamp to avoid
+            # "database tables is corrupted" errors.
+            [ "$id" -gt 255 ] && id=255
+            echo "$id"
             ;;
     esac
 }
