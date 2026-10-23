@@ -2071,6 +2071,11 @@ is_adguard_installed() {
     [ -x /opt/AdGuardHome/AdGuardHome ]
 }
 
+# Whether HaGeZi DNS blocklists are installed (module + at least one list downloaded).
+is_hagezi_installed() {
+    [ -d /etc/krot/hagezi ] && [ -f /etc/krot/hagezi/current.txt ]
+}
+
 # Whether the olcRTC tunnel module is present: init script plus the srv binary
 # installed by hub/olcrtc/install.sh.
 is_olcrtc_installed() {

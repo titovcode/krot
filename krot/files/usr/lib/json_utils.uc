@@ -736,9 +736,11 @@ function system_info_json() {
         byedpi_installed: arg_number(ARGV[9]),
         adguard_version: as_string(ARGV[10]),
         adguard_installed: arg_number(ARGV[11]),
-        openwrt_version: as_string(ARGV[12]),
-        device_model: as_string(ARGV[13]),
-        generated_at: arg_number(ARGV[14])
+        hagezi_version: as_string(ARGV[12]),
+        hagezi_installed: arg_number(ARGV[13]),
+        openwrt_version: as_string(ARGV[14]),
+        device_model: as_string(ARGV[15]),
+        generated_at: arg_number(ARGV[16])
     });
 }
 

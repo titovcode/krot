@@ -1,0 +1,14 @@
+{
+  "id": "hagezi-blocklists",
+  "name": "HaGeZi — DNS Blocklists",
+  "description": "Network-wide ad, tracker and malware blocking using HaGeZi DNS blocklists. Integrates into K.R.O.T. DNS settings — no extra software needed.",
+  "category": "dns",
+  "author": "HaGeZi",
+  "project_url": "https://github.com/hagezi/dns-blocklists",
+  "component": "hagezi",
+  "repo": "titovcode/krot",
+  "version": "1.0.0",
+  "install_script": "hub/hagezi-blocklists/install.sh",
+  "remove_script": "hub/hagezi-blocklists/remove.sh",
+  "update_script": "hub/hagezi-blocklists/update.sh"
+}

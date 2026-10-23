@@ -9215,10 +9215,66 @@ sing_box_configure_dns() {
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "HTTPS")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "AAAA")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" '"use-application-dns.net"')
+    configure_hagezi_dns_blocklist
     configure_tailscale_server_dns_bypass
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG")
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG" "rewrite_ttl" "$rewrite_ttl")
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG" "domain" "$service_domains")
+}
+
+# Add HaGeZi DNS blocklist domains as reject rules
+# Reads /etc/krot/hagezi/current.txt (AdBlock format: ||domain.com^)
+# and adds each domain as a DNS reject rule in sing-box
+configure_hagezi_dns_blocklist() {
+    local enabled list_file domain_count=0 domain
+
+    config_get_bool enabled "settings" "hagezi_enabled" 0
+    [ "$enabled" -eq 1 ] || return 0
+
+    list_file="/etc/krot/hagezi/current.txt"
+    [ -f "$list_file" ] || {
+        log "HaGeZi blocklist not found at $list_file" "warn"
+        return 0
+    }
+
+    log "Adding HaGeZi DNS blocklist..." "debug"
+
+    # Convert AdBlock format ||domain.com^ to sing-box domain_suffix rules
+    # Process in batches to avoid command line length limits
+    local batch="" batch_count=0
+    while IFS= read -r line; do
+        # Skip comments and empty lines
+        case "$line" in
+            \!*|\[*|"") continue ;;
+        esac
+
+        # Extract domain from ||domain.com^ format
+        domain="$(printf '%s' "$line" | sed 's/^||//; s/\^$//')"
+        [ -n "$domain" ] || continue
+
+        # Add to batch (comma-separated)
+        if [ -n "$batch" ]; then
+            batch="$batch,$domain"
+        else
+            batch="$domain"
+        fi
+        batch_count=$((batch_count + 1))
+        domain_count=$((domain_count + 1))
+
+        # Flush batch every 100 domains
+        if [ "$batch_count" -ge 100 ]; then
+            config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" "$(comma_string_to_json_array "$batch")")
+            batch=""
+            batch_count=0
+        fi
+    done < "$list_file"
+
+    # Flush remaining batch
+    if [ -n "$batch" ]; then
+        config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" "$(comma_string_to_json_array "$batch")")
+    fi
+
+    log "HaGeZi: added $domain_count domains to DNS blocklist" "info"
 }
 
 configure_tailscale_server_dns_bypass() {
@@ -11495,7 +11551,7 @@ write_system_info_cache() {
 }
 
 build_system_info() {
-    local podkop_version podkop_latest_version luci_app_version sing_box_version sing_box_extended zapret_version zapret_installed byedpi_version byedpi_installed adguard_version adguard_installed openwrt_version device_model
+    local podkop_version podkop_latest_version luci_app_version sing_box_version sing_box_extended zapret_version zapret_installed byedpi_version byedpi_installed adguard_version adguard_installed hagezi_version hagezi_installed openwrt_version device_model
     local generated_at
 
     podkop_version="$PODKOP_VERSION"
@@ -11553,6 +11609,15 @@ build_system_info() {
         adguard_version="not installed"
     fi
 
+    hagezi_installed=0
+    if is_hagezi_installed; then
+        hagezi_installed=1
+        hagezi_version="$(cat /etc/krot/hagezi/version 2>/dev/null)"
+        [ -z "$hagezi_version" ] && hagezi_version="installed"
+    else
+        hagezi_version="not installed"
+    fi
+
     if [ -f /etc/os-release ]; then
         openwrt_version=$(grep OPENWRT_RELEASE /etc/os-release | cut -d'"' -f2)
         [ -z "$openwrt_version" ] && openwrt_version="unknown"
@@ -11578,6 +11643,7 @@ build_system_info() {
         "$zapret_version" "$zapret_installed" \
         "$byedpi_version" "$byedpi_installed" \
         "$adguard_version" "$adguard_installed" \
+        "$hagezi_version" "$hagezi_installed" \
         "$openwrt_version" "$device_model" "$generated_at"
 }
 
