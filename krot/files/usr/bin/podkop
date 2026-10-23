@@ -9215,7 +9215,8 @@ sing_box_configure_dns() {
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "HTTPS")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "AAAA")
     config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" '"use-application-dns.net"')
-    configure_hagezi_dns_blocklist
+    # configure_hagezi_dns_blocklist  # Old slow method, disabled
+    configure_hagezi_dns_blocklist_v2  # New fast method using rule_set
     configure_tailscale_server_dns_bypass
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG")
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG" "rewrite_ttl" "$rewrite_ttl")
@@ -9275,6 +9276,29 @@ configure_hagezi_dns_blocklist() {
     fi
 
     log "HaGeZi: added $domain_count domains to DNS blocklist" "info"
+}
+
+# Add HaGeZi DNS blocklist via sing-box rule_set (fast, efficient)
+# Uses pre-generated /etc/krot/hagezi/ruleset.srs (binary format for fast loading)
+configure_hagezi_dns_blocklist_v2() {
+    local enabled ruleset_file
+
+    config_get_bool enabled "settings" "hagezi_enabled" 0
+    [ "$enabled" -eq 1 ] || return 0
+
+    ruleset_file="/etc/krot/hagezi/ruleset.srs"
+    [ -s "$ruleset_file" ] || {
+        log "HaGeZi ad blocking is enabled but rule_set not found at $ruleset_file. Reinstall the HaGeZi module via Hub." "warn"
+        return 0
+    }
+
+    # Add local rule_set reference (binary format for fast loading)
+    config=$(sing_box_cm_add_local_ruleset "$config" "hagezi-blocklist" "binary" "$ruleset_file")
+    
+    # Add DNS reject rule using the rule_set (string format, same as other rules)
+    config=$(sing_box_cm_add_dns_reject_rule "$config" "rule_set" '"hagezi-blocklist"')
+    
+    log "HaGeZi: using DNS blocklist from $ruleset_file" "info"
 }
 
 configure_tailscale_server_dns_bypass() {
