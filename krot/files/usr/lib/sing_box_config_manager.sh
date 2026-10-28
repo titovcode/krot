@@ -8,13 +8,79 @@
 
 SERVICE_TAG="__service_tag"
 
+# Batch mode: while SB_CM_BATCH_ACTIVE=1, sing_box_cm_* wrappers do not spawn
+# ucode per call. The operation is appended to SB_CM_BATCH_FILE and the caller
+# gets its input config back unchanged, so the config variable stays stale
+# until sing_box_cm_batch_flush applies every queued operation in a single
+# ucode process. Code inside a batch region must not read the config variable
+# (existence checks, field lookups) without flushing first.
+SB_CM_BATCH_ACTIVE=0
+SB_CM_BATCH_FILE=""
+
+sing_box_cm_batch_op() {
+    local operation="$1"
+    shift
+    local arg
+
+    printf '%s' "$operation" >>"$SB_CM_BATCH_FILE" || return 1
+    for arg in "$@"; do
+        printf '\t%s' "$arg" >>"$SB_CM_BATCH_FILE" || return 1
+    done
+    printf '\n' >>"$SB_CM_BATCH_FILE"
+}
+
 sing_box_cm_ucode() {
     local operation="$1"
     local config="$2"
     shift 2
 
+    if [ "$SB_CM_BATCH_ACTIVE" = "1" ]; then
+        sing_box_cm_batch_op "$operation" "$@" || return 1
+        printf '%s' "$config"
+        return 0
+    fi
+
     printf '%s' "$config" |
         ucode "${PODKOP_LIB:-/usr/lib/krot}/sing_box_config_manager.uc" "$operation" "$@"
+}
+
+sing_box_cm_batch_begin() {
+    [ "$SB_CM_BATCH_ACTIVE" = "1" ] && return 1
+
+    SB_CM_BATCH_FILE="$(mktemp)" || return 1
+    : >"$SB_CM_BATCH_FILE"
+    SB_CM_BATCH_ACTIVE=1
+    return 0
+}
+
+# Must run in the current shell (not via command substitution): it clears the
+# batch state as a side effect. The resulting config is returned in
+# SB_CM_BATCH_RESULT:  sing_box_cm_batch_flush "$config"; config="$SB_CM_BATCH_RESULT"
+sing_box_cm_batch_flush() {
+    local config="$1"
+
+    if [ "$SB_CM_BATCH_ACTIVE" != "1" ]; then
+        SB_CM_BATCH_RESULT="$config"
+        return 0
+    fi
+
+    SB_CM_BATCH_ACTIVE=0
+    if [ -s "$SB_CM_BATCH_FILE" ]; then
+        SB_CM_BATCH_RESULT="$(
+            printf '%s' "$config" |
+                ucode "${PODKOP_LIB:-/usr/lib/krot}/sing_box_config_manager.uc" batch-tsv "$SB_CM_BATCH_FILE"
+        )"
+    else
+        SB_CM_BATCH_RESULT="$config"
+    fi
+    rm -f "$SB_CM_BATCH_FILE"
+    SB_CM_BATCH_FILE=""
+}
+
+sing_box_cm_batch_abort() {
+    SB_CM_BATCH_ACTIVE=0
+    [ -n "$SB_CM_BATCH_FILE" ] && rm -f "$SB_CM_BATCH_FILE"
+    SB_CM_BATCH_FILE=""
 }
 
 sing_box_cm_configure_log() {
@@ -172,6 +238,15 @@ sing_box_cm_add_urltest_outbound() {
     local interrupt="$8"
     local outbounds_tmp result status
 
+    # Batch mode applies operations after this function returns, so the
+    # outbounds tmpfile would already be deleted; pass the JSON inline.
+    if [ "$SB_CM_BATCH_ACTIVE" = "1" ]; then
+        sing_box_cm_batch_op add-urltest-outbound "$tag" "$outbounds" \
+            "$url" "$interval" "$tolerance" "$idle_timeout" "$interrupt" || return 1
+        printf '%s\n' "$config"
+        return 0
+    fi
+
     outbounds_tmp="$(mktemp)" || return 1
     printf '%s' "$outbounds" > "$outbounds_tmp" || {
         rm -f "$outbounds_tmp"
@@ -195,6 +270,14 @@ sing_box_cm_add_selector_outbound() {
     local default="$4"
     local interrupt="$5"
     local outbounds_tmp result status
+
+    # Batch mode applies operations after this function returns, so the
+    # outbounds tmpfile would already be deleted; pass the JSON inline.
+    if [ "$SB_CM_BATCH_ACTIVE" = "1" ]; then
+        sing_box_cm_batch_op add-selector-outbound "$tag" "$outbounds" "$default" "$interrupt" || return 1
+        printf '%s\n' "$config"
+        return 0
+    fi
 
     outbounds_tmp="$(mktemp)" || return 1
     printf '%s' "$outbounds" > "$outbounds_tmp" || {

@@ -643,18 +643,44 @@ convert_crlf_to_lf() {
 parse_domain_or_subnet_string_to_commas_string() {
     local string="$1"
     local type="$2"
-    local tmpfile result
 
-    tmpfile=$(mktemp) || return 1
-    # Ensure cleanup on exit/interrupt
-    trap 'rm -f "$tmpfile"' EXIT INT TERM
-    printf "%s\n" "$string" | sed -e 's/[[:space:]]*\/\/.*$//' -e 's/[[:space:]]*#.*$//' | tr ', ' '\n' | grep -v '^$' > "$tmpfile"
+    [ -n "$string" ] || return 0
 
-    result="$(parse_domain_or_subnet_file_to_comma_string "$tmpfile" "$type")"
-    rm -f "$tmpfile"
-    trap - EXIT INT TERM
-
-    echo "$result"
+    # One awk process does the whole pipeline: strip comments, split on
+    # commas/spaces, trim, validate against the same RE_* patterns the
+    # line-by-line shell version used, and join with commas.
+    printf '%s\n' "$string" | awk -v type="$type" '
+        BEGIN {
+            if (type != "domains" && type != "subnets")
+                exit 1
+        }
+        function is_domain(s) { return s ~ /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/ }
+        function is_ipv4(s) { return s ~ /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/ }
+        function is_ipv4_cidr(s) { return s ~ /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\/(3[0-2]|[12]?[0-9])$/ }
+        {
+            sub(/[[:space:]]*\/\/.*$/, "")
+            sub(/[[:space:]]*#.*$/, "")
+            n = split($0, parts, /[, ]/)
+            for (i = 1; i <= n; i++) {
+                item = parts[i]
+                sub(/^[[:space:]]+/, "", item)
+                sub(/[[:space:]]+$/, "", item)
+                if (item == "")
+                    continue
+                if (type == "domains") {
+                    domain = item
+                    sub(/^\./, "", domain)
+                    if (!is_domain(domain))
+                        continue
+                } else {
+                    if (!is_ipv4(item) && !is_ipv4_cidr(item))
+                        continue
+                }
+                out = out (out == "" ? "" : ",") item
+            }
+        }
+        END { if (out != "") print out }
+    '
 }
 
 #######################################

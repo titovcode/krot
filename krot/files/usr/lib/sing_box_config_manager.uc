@@ -1096,6 +1096,34 @@ if (mode == "save-config") {
     exit(0);
 }
 
+if (mode == "batch-tsv") {
+    // Apply several operations in one process: the ops file holds one
+    // operation per line as tab-separated fields (op, arg1, arg2, ...).
+    let path = ARGV[1] || "";
+    let data = path != "" ? fs.readfile(path) : null;
+    if (data == null) {
+        warn("batch-tsv: cannot read ops file\n");
+        exit(1);
+    }
+
+    for (let line in split(data, "\n")) {
+        if (line == "")
+            continue;
+
+        let parts = split(line, "\t");
+        let batch_handler = handlers[parts[0]];
+        if (!batch_handler) {
+            warn(sprintf("batch-tsv: unknown operation '%s'\n", parts[0]));
+            exit(1);
+        }
+
+        batch_handler(config, slice(parts, 1));
+    }
+
+    write_json(config);
+    exit(0);
+}
+
 let handler = handlers[mode];
 if (!handler) {
     warn("Usage: sing_box_config_manager.uc <operation> [args...]\n");

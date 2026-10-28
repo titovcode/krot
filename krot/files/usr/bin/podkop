@@ -1557,11 +1557,42 @@ _pid_file_points_to_expected_process() {
     printf '%s' "$cmdline" | grep -qF "$marker"
 }
 
+sing_box_watchdog_cleanup() {
+    local recorded_pid
+
+    recorded_pid="$(sed -n '1p' "$PODKOP_WATCHDOG_PID_FILE" 2>/dev/null)"
+    [ "$recorded_pid" = "$$" ] && rm -f "$PODKOP_WATCHDOG_PID_FILE"
+}
+
+sing_box_watchdog() {
+    local fail_count=0
+
+    trap 'sing_box_watchdog_cleanup; exit 0' EXIT INT TERM
+
+    while true; do
+        sleep "$PODKOP_WATCHDOG_INTERVAL"
+
+        if podkop_is_stably_running; then
+            fail_count=0
+            continue
+        fi
+
+        fail_count=$((fail_count + 1))
+        log "Watchdog detected K.R.O.T. is not stable (failure ${fail_count}/${PODKOP_WATCHDOG_FAIL_THRESHOLD})" "warn"
+
+        if [ "$fail_count" -ge "$PODKOP_WATCHDOG_FAIL_THRESHOLD" ]; then
+            log "Watchdog threshold reached. Restarting K.R.O.T." "fatal"
+            "$PODKOP_SERVICE_INIT" restart >/dev/null 2>&1 || true
+            exit 0
+        fi
+    done
+}
+
 stop_sing_box_watchdog() {
     local pid
 
     pid="$(sed -n '1p' "$PODKOP_WATCHDOG_PID_FILE" 2>/dev/null)"
-    if [ -n "$pid" ] && _pid_file_points_to_expected_process "$pid" "krot-watchdog"; then
+    if [ -n "$pid" ] && _pid_file_points_to_expected_process "$pid" "sing_box_watchdog"; then
         kill "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
         log "Stopped K.R.O.T. watchdog (PID $pid)"
@@ -1570,7 +1601,7 @@ stop_sing_box_watchdog() {
 }
 
 start_sing_box_watchdog() {
-    local enabled
+    local enabled watchdog_pid
 
     stop_sing_box_watchdog
 
@@ -1578,30 +1609,13 @@ start_sing_box_watchdog() {
     [ "$enabled" -eq 1 ] || return 0
 
     (
-        fail_count=0
-        trap 'rm -f "$PODKOP_WATCHDOG_PID_FILE"; exit 0' EXIT INT TERM
-        echo $$ > "$PODKOP_WATCHDOG_PID_FILE"
-
-        while true; do
-            sleep "$PODKOP_WATCHDOG_INTERVAL"
-
-            if podkop_is_stably_running; then
-                fail_count=0
-                continue
-            fi
-
-            fail_count=$((fail_count + 1))
-            log "Watchdog detected K.R.O.T. is not stable (failure ${fail_count}/${PODKOP_WATCHDOG_FAIL_THRESHOLD})" "warn"
-
-            if [ "$fail_count" -ge "$PODKOP_WATCHDOG_FAIL_THRESHOLD" ]; then
-                log "Watchdog threshold reached. Restarting K.R.O.T." "fatal"
-                "$PODKOP_SERVICE_INIT" restart >/dev/null 2>&1 || true
-                exit 0
-            fi
-        done
+        close_inherited_service_lock_fd
+        exec "$PODKOP_BIN" sing_box_watchdog
     ) >/dev/null 2>&1 &
+    watchdog_pid="$!"
+    printf '%s\n' "$watchdog_pid" > "$PODKOP_WATCHDOG_PID_FILE"
 
-    log "Started K.R.O.T. watchdog (interval ${PODKOP_WATCHDOG_INTERVAL}s, threshold ${PODKOP_WATCHDOG_FAIL_THRESHOLD})"
+    log "Started K.R.O.T. watchdog (PID $watchdog_pid, interval ${PODKOP_WATCHDOG_INTERVAL}s, threshold ${PODKOP_WATCHDOG_FAIL_THRESHOLD})"
 }
 
 clear_reload_state() {
@@ -1733,210 +1747,6 @@ build_dnsmasq_signature() {
     signature_finish
 }
 
-append_sing_box_rule_signature() {
-    local section="$1"
-    local action domain domain_suffix domain_keyword domain_regex ip_cidr source_ip_cidr fully_routed_ips \
-        ports community_lists rule_set rule_set_with_subnets domain_ip_lists mixed_proxy_enabled mixed_proxy_port \
-        mixed_proxy_auth_enabled mixed_proxy_username mixed_proxy_password resolve_real_ip_for_routing
-
-    rule_is_enabled "$section" || return 0
-
-    action="$(get_rule_action_primitive "$section")"
-    [ -n "$action" ] || return 0
-
-    signature_add "rule.$section.action" "$action"
-
-    # A rule whose raw action carries a module-declared config field must also
-    # fold that field into the signature: editing the pasted config has to
-    # trigger a reload even though sing-box itself never sees the fragment.
-    local module_config_meta module_config_option module_config_value
-    module_config_options > /dev/null
-    if module_config_meta="$(get_rule_module_config_meta "$section")"; then
-        module_config_option="$(printf '%s' "$module_config_meta" | cut -f1)"
-        config_get module_config_value "$section" "$module_config_option"
-        signature_add "rule.$section.$module_config_option" "$module_config_value"
-    fi
-
-    case "$action" in
-    proxy)
-        local selector_proxy_links subscription_urls udp_over_tcp urltest_enabled \
-            urltest_check_interval urltest_tolerance urltest_testing_url subscription_update_enabled \
-            subscription_update_interval detect_server_country urltest_filter_mode urltest_exclude_countries urltest_include_countries \
-            urltest_exclude_outbounds urltest_exclude_regex urltest_include_outbounds urltest_include_regex
-        config_get selector_proxy_links "$section" "selector_proxy_links"
-        config_get subscription_urls "$section" "subscription_urls"
-        config_get_bool udp_over_tcp "$section" "enable_udp_over_tcp" 0
-        config_get_bool urltest_enabled "$section" "urltest_enabled" 0
-        config_get_bool detect_server_country "$section" "detect_server_country" 0
-        urltest_check_interval="$(get_urltest_check_interval_for_rule "$section")"
-        config_get urltest_tolerance "$section" "urltest_tolerance" 50
-        config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
-        config_get_bool subscription_update_enabled "$section" "subscription_update_enabled" 1
-        subscription_update_interval="$(get_subscription_update_interval_for_rule "$section")"
-        config_get urltest_filter_mode "$section" "urltest_filter_mode" "disabled"
-        config_get urltest_exclude_countries "$section" "urltest_exclude_countries"
-        config_get urltest_include_countries "$section" "urltest_include_countries"
-        config_get urltest_exclude_outbounds "$section" "urltest_exclude_outbounds"
-        config_get urltest_exclude_regex "$section" "urltest_exclude_regex"
-        config_get urltest_include_outbounds "$section" "urltest_include_outbounds"
-        config_get urltest_include_regex "$section" "urltest_include_regex"
-
-        signature_add "rule.$section.selector_proxy_links" "$selector_proxy_links"
-        signature_add "rule.$section.subscription_urls" "$subscription_urls"
-        signature_add "rule.$section.enable_udp_over_tcp" "$udp_over_tcp"
-        signature_add "rule.$section.urltest_enabled" "$urltest_enabled"
-        signature_add "rule.$section.detect_server_country" "$detect_server_country"
-        signature_add "rule.$section.urltest_check_interval" "$urltest_check_interval"
-        signature_add "rule.$section.urltest_tolerance" "$urltest_tolerance"
-        signature_add "rule.$section.urltest_testing_url" "$urltest_testing_url"
-        signature_add "rule.$section.urltest_filter_mode" "$urltest_filter_mode"
-        signature_add "rule.$section.urltest_exclude_countries" "$urltest_exclude_countries"
-        signature_add "rule.$section.urltest_include_countries" "$urltest_include_countries"
-        signature_add "rule.$section.urltest_exclude_outbounds" "$urltest_exclude_outbounds"
-        signature_add "rule.$section.urltest_exclude_regex" "$urltest_exclude_regex"
-        signature_add "rule.$section.urltest_include_outbounds" "$urltest_include_outbounds"
-        signature_add "rule.$section.urltest_include_regex" "$urltest_include_regex"
-        signature_add "rule.$section.subscription_update_enabled" "$subscription_update_enabled"
-        signature_add "rule.$section.subscription_update_interval" "$subscription_update_interval"
-
-        config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
-        signature_add "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
-        if [ "$mixed_proxy_enabled" -eq 1 ]; then
-            config_get mixed_proxy_port "$section" "mixed_proxy_port"
-            signature_add "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
-            config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
-            signature_add "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
-            if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
-                config_get mixed_proxy_username "$section" "mixed_proxy_username"
-                config_get mixed_proxy_password "$section" "mixed_proxy_password"
-                signature_add "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
-                signature_add "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
-            fi
-        fi
-
-        config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
-        signature_add "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
-        ;;
-    outbound)
-        local outbound_json
-        outbound_json="$(get_rule_outbound_json "$section")"
-        signature_add "rule.$section.outbound_json" "$outbound_json"
-
-        config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
-        signature_add "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
-        if [ "$mixed_proxy_enabled" -eq 1 ]; then
-            config_get mixed_proxy_port "$section" "mixed_proxy_port"
-            signature_add "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
-            config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
-            signature_add "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
-            if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
-                config_get mixed_proxy_username "$section" "mixed_proxy_username"
-                config_get mixed_proxy_password "$section" "mixed_proxy_password"
-                signature_add "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
-                signature_add "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
-            fi
-        fi
-
-        config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
-        signature_add "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
-        ;;
-    byedpi)
-        local byedpi_index
-        byedpi_index="$(get_byedpi_rule_index "$section")"
-        signature_add "rule.$section.byedpi_index" "$byedpi_index"
-
-        config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
-        signature_add "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
-        if [ "$mixed_proxy_enabled" -eq 1 ]; then
-            config_get mixed_proxy_port "$section" "mixed_proxy_port"
-            signature_add "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
-            config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
-            signature_add "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
-            if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
-                config_get mixed_proxy_username "$section" "mixed_proxy_username"
-                config_get mixed_proxy_password "$section" "mixed_proxy_password"
-                signature_add "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
-                signature_add "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
-            fi
-        fi
-
-        signature_add "rule.$section.resolve_real_ip_for_routing" "1"
-        ;;
-    zapret)
-        config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
-        signature_add "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
-        if [ "$mixed_proxy_enabled" -eq 1 ]; then
-            config_get mixed_proxy_port "$section" "mixed_proxy_port"
-            signature_add "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
-            config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
-            signature_add "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
-            if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
-                config_get mixed_proxy_username "$section" "mixed_proxy_username"
-                config_get mixed_proxy_password "$section" "mixed_proxy_password"
-                signature_add "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
-                signature_add "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
-            fi
-        fi
-        ;;
-    vpn)
-        local interface_name domain_resolver_enabled domain_resolver_dns_type domain_resolver_dns_server
-        config_get interface_name "$section" "interface"
-        config_get_bool domain_resolver_enabled "$section" "domain_resolver_enabled" 0
-        signature_add "rule.$section.interface" "$interface_name"
-        signature_add "rule.$section.domain_resolver_enabled" "$domain_resolver_enabled"
-        if [ "$domain_resolver_enabled" -eq 1 ]; then
-            config_get domain_resolver_dns_type "$section" "domain_resolver_dns_type"
-            config_get domain_resolver_dns_server "$section" "domain_resolver_dns_server"
-            signature_add "rule.$section.domain_resolver_dns_type" "$domain_resolver_dns_type"
-            signature_add "rule.$section.domain_resolver_dns_server" "$domain_resolver_dns_server"
-        fi
-
-        config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
-        signature_add "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
-        if [ "$mixed_proxy_enabled" -eq 1 ]; then
-            config_get mixed_proxy_port "$section" "mixed_proxy_port"
-            signature_add "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
-            config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
-            signature_add "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
-            if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
-                config_get mixed_proxy_username "$section" "mixed_proxy_username"
-                config_get mixed_proxy_password "$section" "mixed_proxy_password"
-                signature_add "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
-                signature_add "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
-            fi
-        fi
-
-        config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
-        signature_add "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
-        ;;
-    esac
-
-    domain="$(get_rule_condition_commas_string "$section" "domain" "domains")"
-    domain_suffix="$(get_rule_condition_commas_string "$section" "domain_suffix" "domains")"
-    domain_keyword="$(get_rule_condition_commas_string "$section" "domain_keyword" "generic")"
-    domain_regex="$(get_rule_condition_commas_string "$section" "domain_regex" "generic")"
-    ip_cidr="$(get_rule_condition_commas_string "$section" "ip_cidr" "subnets")"
-    source_ip_cidr="$(get_rule_condition_commas_string "$section" "source_ip_cidr" "subnets")"
-    ports="$(get_rule_ports_commas_string "$section")"
-    config_get fully_routed_ips "$section" "fully_routed_ips"
-    config_get community_lists "$section" "community_lists"
-    config_get rule_set "$section" "rule_set"
-    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
-    config_get domain_ip_lists "$section" "domain_ip_lists"
-
-    signature_add "rule.$section.domain" "$domain"
-    signature_add "rule.$section.domain_suffix" "$domain_suffix"
-    signature_add "rule.$section.domain_keyword" "$domain_keyword"
-    signature_add "rule.$section.domain_regex" "$domain_regex"
-    signature_add "rule.$section.ip_cidr" "$ip_cidr"
-    signature_add "rule.$section.source_ip_cidr" "$source_ip_cidr"
-    signature_add "rule.$section.ports" "$ports"
-    signature_add "rule.$section.fully_routed_ips" "$fully_routed_ips"
-    signature_add "rule.$section.community_lists" "$community_lists"
-    signature_add "rule.$section.rule_set" "$rule_set"
-    signature_add "rule.$section.rule_set_with_subnets" "$rule_set_with_subnets"
-    signature_add "rule.$section.domain_ip_lists" "$domain_ip_lists"
-}
 
 append_sing_box_server_signature() {
     local section="$1"
@@ -2070,14 +1880,269 @@ append_sing_box_server_signature() {
     signature_add "server.$section.tailscale_advertise_routes" "$tailscale_advertise_routes"
     signature_add "server.$section.tailscale_advertise_exit_node" "$tailscale_advertise_exit_node"
 }
+sig_tmp_add() {
+    # Same on-disk format as signature_add, but with an explicit target file so
+    # one section walk can feed several signature accumulators at once.
+    printf '[%s]\n%s\n' "$2" "$3" >> "$1"
+}
 
-build_sing_box_signature() {
+append_unified_rule_signature() {
+    local section="$1"
+
+    rule_is_enabled "$section" || return 0
+
+    local action action_raw
+    action="$(get_rule_action_primitive "$section")"
+    config_get action_raw "$section" "action"
+
+    # Shared per-rule values: every helper below runs once per rule instead of
+    # once per signature builder.
+    local domain domain_suffix domain_keyword domain_regex ip_cidr source_ip_cidr ports \
+        community_lists community_subnet_lists remote_domain_lists remote_subnet_lists \
+        rule_set rule_set_with_subnets domain_ip_lists fully_routed_ips
+
+    domain="$(get_rule_condition_commas_string "$section" "domain" "domains")"
+    domain_suffix="$(get_rule_condition_commas_string "$section" "domain_suffix" "domains")"
+    domain_keyword="$(get_rule_condition_commas_string "$section" "domain_keyword" "generic")"
+    domain_regex="$(get_rule_condition_commas_string "$section" "domain_regex" "generic")"
+    ip_cidr="$(get_rule_condition_commas_string "$section" "ip_cidr" "subnets")"
+    source_ip_cidr="$(get_rule_condition_commas_string "$section" "source_ip_cidr" "subnets")"
+    ports="$(get_rule_ports_commas_string "$section")"
+    config_get community_lists "$section" "community_lists"
+    community_subnet_lists="$(filter_community_subnet_lists "$community_lists")"
+    config_get remote_domain_lists "$section" "remote_domain_lists"
+    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+    config_get rule_set "$section" "rule_set"
+    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
+    config_get domain_ip_lists "$section" "domain_ip_lists"
+    config_get fully_routed_ips "$section" "fully_routed_ips"
+
+    # ---- sing-box signature ----
+    if [ -n "$action" ]; then
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.action" "$action"
+
+        # A rule whose raw action carries a module-declared config field must also
+        # fold that field into the signature: editing the pasted config has to
+        # trigger a reload even though sing-box itself never sees the fragment.
+        local module_config_meta module_config_option module_config_value
+        if module_config_meta="$(get_rule_module_config_meta "$section")"; then
+            module_config_option="$(printf '%s' "$module_config_meta" | cut -f1)"
+            config_get module_config_value "$section" "$module_config_option"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.$module_config_option" "$module_config_value"
+        fi
+
+        case "$action" in
+        proxy)
+            local selector_proxy_links subscription_urls udp_over_tcp urltest_enabled \
+                urltest_check_interval urltest_tolerance urltest_testing_url subscription_update_enabled \
+                subscription_update_interval detect_server_country urltest_filter_mode urltest_exclude_countries urltest_include_countries \
+                urltest_exclude_outbounds urltest_exclude_regex urltest_include_outbounds urltest_include_regex
+            config_get selector_proxy_links "$section" "selector_proxy_links"
+            config_get subscription_urls "$section" "subscription_urls"
+            config_get_bool udp_over_tcp "$section" "enable_udp_over_tcp" 0
+            config_get_bool urltest_enabled "$section" "urltest_enabled" 0
+            config_get_bool detect_server_country "$section" "detect_server_country" 0
+            urltest_check_interval="$(get_urltest_check_interval_for_rule "$section")"
+            config_get urltest_tolerance "$section" "urltest_tolerance" 50
+            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
+            config_get_bool subscription_update_enabled "$section" "subscription_update_enabled" 1
+            subscription_update_interval="$(get_subscription_update_interval_for_rule "$section")"
+            config_get urltest_filter_mode "$section" "urltest_filter_mode" "disabled"
+            config_get urltest_exclude_countries "$section" "urltest_exclude_countries"
+            config_get urltest_include_countries "$section" "urltest_include_countries"
+            config_get urltest_exclude_outbounds "$section" "urltest_exclude_outbounds"
+            config_get urltest_exclude_regex "$section" "urltest_exclude_regex"
+            config_get urltest_include_outbounds "$section" "urltest_include_outbounds"
+            config_get urltest_include_regex "$section" "urltest_include_regex"
+
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.selector_proxy_links" "$selector_proxy_links"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.subscription_urls" "$subscription_urls"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.enable_udp_over_tcp" "$udp_over_tcp"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_enabled" "$urltest_enabled"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.detect_server_country" "$detect_server_country"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_check_interval" "$urltest_check_interval"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_tolerance" "$urltest_tolerance"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_testing_url" "$urltest_testing_url"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_filter_mode" "$urltest_filter_mode"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_exclude_countries" "$urltest_exclude_countries"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_include_countries" "$urltest_include_countries"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_exclude_outbounds" "$urltest_exclude_outbounds"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_exclude_regex" "$urltest_exclude_regex"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_include_outbounds" "$urltest_include_outbounds"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.urltest_include_regex" "$urltest_include_regex"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.subscription_update_enabled" "$subscription_update_enabled"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.subscription_update_interval" "$subscription_update_interval"
+
+            sig_tmp_add_mixed_proxy "$SIG_TMP_SING_BOX" "$section"
+
+            local resolve_real_ip_for_routing
+            config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
+            ;;
+        outbound)
+            local outbound_json
+            outbound_json="$(get_rule_outbound_json "$section")"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.outbound_json" "$outbound_json"
+
+            sig_tmp_add_mixed_proxy "$SIG_TMP_SING_BOX" "$section"
+
+            local resolve_real_ip_for_routing
+            config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
+            ;;
+        byedpi)
+            local byedpi_index
+            byedpi_index="$(get_byedpi_rule_index "$section")"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.byedpi_index" "$byedpi_index"
+
+            sig_tmp_add_mixed_proxy "$SIG_TMP_SING_BOX" "$section"
+
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.resolve_real_ip_for_routing" "1"
+            ;;
+        zapret)
+            sig_tmp_add_mixed_proxy "$SIG_TMP_SING_BOX" "$section"
+            ;;
+        vpn)
+            local interface_name domain_resolver_enabled domain_resolver_dns_type domain_resolver_dns_server
+            config_get interface_name "$section" "interface"
+            config_get_bool domain_resolver_enabled "$section" "domain_resolver_enabled" 0
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.interface" "$interface_name"
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_resolver_enabled" "$domain_resolver_enabled"
+            if [ "$domain_resolver_enabled" -eq 1 ]; then
+                config_get domain_resolver_dns_type "$section" "domain_resolver_dns_type"
+                config_get domain_resolver_dns_server "$section" "domain_resolver_dns_server"
+                sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_resolver_dns_type" "$domain_resolver_dns_type"
+                sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_resolver_dns_server" "$domain_resolver_dns_server"
+            fi
+
+            sig_tmp_add_mixed_proxy "$SIG_TMP_SING_BOX" "$section"
+
+            local resolve_real_ip_for_routing
+            config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
+            sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.resolve_real_ip_for_routing" "$resolve_real_ip_for_routing"
+            ;;
+        esac
+
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain" "$domain"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_suffix" "$domain_suffix"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_keyword" "$domain_keyword"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_regex" "$domain_regex"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.ip_cidr" "$ip_cidr"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.source_ip_cidr" "$source_ip_cidr"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.ports" "$ports"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.fully_routed_ips" "$fully_routed_ips"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.community_lists" "$community_lists"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.rule_set" "$rule_set"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.rule_set_with_subnets" "$rule_set_with_subnets"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.domain_ip_lists" "$domain_ip_lists"
+    fi
+
+    # ---- nft signature ----
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.ip_cidr" "$ip_cidr"
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.ports" "$ports"
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.community_subnet_lists" "$community_subnet_lists"
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.remote_subnet_lists" "$remote_subnet_lists"
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.rule_set_with_subnets" "$rule_set_with_subnets"
+    sig_tmp_add "$SIG_TMP_NFT" "rule.$section.domain_ip_lists" "$domain_ip_lists"
+
+    # ---- zapret signatures ----
+    if [ "$action_raw" = "zapret" ]; then
+        sig_tmp_add "$SIG_TMP_ZAPRET_QUEUE" "zapret_queue.section" "$section"
+
+        local user_domain_list_type items
+        config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
+
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.nfqws_opt" "$(get_rule_nfqws_opt "$section")"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.domain" "$domain"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.domain_suffix" "$domain_suffix"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.community_lists" "$community_lists"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.rule_set" "$rule_set"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.rule_set_with_subnets" "$rule_set_with_subnets"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.domain_ip_lists" "$domain_ip_lists"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.user_domain_list_type" "$user_domain_list_type"
+        config_get items "$section" "local_domain_lists"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.local_domain_lists" "$items"
+        config_get items "$section" "remote_domain_lists"
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.remote_domain_lists" "$items"
+
+        case "$user_domain_list_type" in
+        dynamic) config_get items "$section" "user_domains" ;;
+        text) config_get items "$section" "user_domains_text" ;;
+        *) items="" ;;
+        esac
+        sig_tmp_add "$SIG_TMP_ZAPRET_RUNTIME" "zapret.$section.user_domains" "$items"
+    fi
+
+    # ---- byedpi runtime signature ----
+    if [ "$action_raw" = "byedpi" ]; then
+        local byedpi_runtime_index
+        byedpi_runtime_index="$(get_byedpi_rule_index "$section")"
+        sig_tmp_add "$SIG_TMP_BYEDPI_RUNTIME" "byedpi.$section.index" "$byedpi_runtime_index"
+        sig_tmp_add "$SIG_TMP_BYEDPI_RUNTIME" "byedpi.$section.byedpi_cmd_opts" "$(get_rule_byedpi_cmd_opts "$section")"
+    fi
+
+    # ---- list update signature (also folded into the cron signature) ----
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.ports" "$ports"
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.community_subnet_lists" "$community_subnet_lists"
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.remote_domain_lists" "$remote_domain_lists"
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.remote_subnet_lists" "$remote_subnet_lists"
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.rule_set_with_subnets" "$rule_set_with_subnets"
+    sig_tmp_add "$SIG_TMP_LIST" "lists.$section.domain_ip_lists" "$domain_ip_lists"
+
+    # ---- cron signature: subscription sources ----
+    if rule_is_subscription_proxy "$section"; then
+        local subscription_update_interval subscription_urls subscription_update_enabled
+        config_get subscription_urls "$section" "subscription_urls"
+        config_get_bool subscription_update_enabled "$section" "subscription_update_enabled" 1
+        subscription_update_interval="$(get_subscription_update_interval_for_rule "$section")"
+
+        sig_tmp_add "$SIG_TMP_CRON_SUB" "subscription.$section.subscription_urls" "$subscription_urls"
+        sig_tmp_add "$SIG_TMP_CRON_SUB" "subscription.$section.subscription_update_enabled" "$subscription_update_enabled"
+        sig_tmp_add "$SIG_TMP_CRON_SUB" "subscription.$section.subscription_update_interval" "$subscription_update_interval"
+    fi
+}
+
+sig_tmp_add_mixed_proxy() {
+    local target="$1"
+    local section="$2"
+    local mixed_proxy_enabled mixed_proxy_port mixed_proxy_auth_enabled mixed_proxy_username mixed_proxy_password
+
+    config_get_bool mixed_proxy_enabled "$section" "mixed_proxy_enabled" 0
+    sig_tmp_add "$target" "rule.$section.mixed_proxy_enabled" "$mixed_proxy_enabled"
+    if [ "$mixed_proxy_enabled" -eq 1 ]; then
+        config_get mixed_proxy_port "$section" "mixed_proxy_port"
+        sig_tmp_add "$target" "rule.$section.mixed_proxy_port" "$mixed_proxy_port"
+        config_get_bool mixed_proxy_auth_enabled "$section" "mixed_proxy_auth_enabled" 0
+        sig_tmp_add "$target" "rule.$section.mixed_proxy_auth_enabled" "$mixed_proxy_auth_enabled"
+        if [ "$mixed_proxy_auth_enabled" -eq 1 ]; then
+            config_get mixed_proxy_username "$section" "mixed_proxy_username"
+            config_get mixed_proxy_password "$section" "mixed_proxy_password"
+            sig_tmp_add "$target" "rule.$section.mixed_proxy_username" "$mixed_proxy_username"
+            sig_tmp_add "$target" "rule.$section.mixed_proxy_password" "$mixed_proxy_password"
+        fi
+    fi
+}
+
+# Builds the seven section-driven reload signatures in a single config walk:
+# sing-box, nft, zapret queue, zapret runtime, byedpi runtime, list update and
+# cron. The emitted key streams are identical to what the individual builders
+# produced, so existing reload-state files stay comparable.
+build_section_signatures() {
+    SIG_TMP_SING_BOX="$(mktemp)" || return 1
+    SIG_TMP_NFT="$(mktemp)" || return 1
+    SIG_TMP_ZAPRET_QUEUE="$(mktemp)" || return 1
+    SIG_TMP_ZAPRET_RUNTIME="$(mktemp)" || return 1
+    SIG_TMP_BYEDPI_RUNTIME="$(mktemp)" || return 1
+    SIG_TMP_LIST="$(mktemp)" || return 1
+    SIG_TMP_CRON="$(mktemp)" || return 1
+    SIG_TMP_CRON_SUB="$(mktemp)" || return 1
+
     local dns_type dns_server bootstrap_dns_server rewrite_ttl output_network_interface disable_quic routing_excluded_ips \
         update_interval cache_path config_path log_level enable_yacd enable_yacd_wan_access yacd_secret_key \
-        download_lists_via_proxy download_lists_via_proxy_section service_listen_address mwan3_active
+        download_lists_via_proxy download_lists_via_proxy_section service_listen_address mwan3_active \
+        source_network_interfaces exclude_ntp
 
-    signature_begin
-
+    # ---- sing-box signature: settings ----
     config_get dns_type "settings" "dns_type" "doh"
     config_get dns_server "settings" "dns_server" "1.1.1.1"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
@@ -2096,207 +2161,83 @@ build_sing_box_signature() {
     mwan3_active=0
     mwan3_is_active && mwan3_active=1
 
-    signature_add "settings.dns_type" "$dns_type"
-    signature_add "settings.dns_server" "$dns_server"
-    signature_add "settings.bootstrap_dns_server" "$bootstrap_dns_server"
-    signature_add "settings.dns_rewrite_ttl" "$rewrite_ttl"
-    signature_add "settings.output_network_interface" "$output_network_interface"
-    signature_add "settings.disable_quic" "$disable_quic"
-    signature_add "settings.routing_excluded_ips" "$routing_excluded_ips"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.dns_type" "$dns_type"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.dns_server" "$dns_server"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.bootstrap_dns_server" "$bootstrap_dns_server"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.dns_rewrite_ttl" "$rewrite_ttl"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.output_network_interface" "$output_network_interface"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.disable_quic" "$disable_quic"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.routing_excluded_ips" "$routing_excluded_ips"
     if has_remote_sing_box_ruleset_sources; then
-        signature_add "settings.update_interval" "$update_interval"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "settings.update_interval" "$update_interval"
     fi
-    signature_add "settings.cache_path" "$cache_path"
-    signature_add "settings.config_path" "$config_path"
-    signature_add "settings.log_level" "$log_level"
-    signature_add "settings.service_listen_address" "$service_listen_address"
-    signature_add "runtime.mwan3_active" "$mwan3_active"
-    signature_add "settings.enable_yacd" "$enable_yacd"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.cache_path" "$cache_path"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.config_path" "$config_path"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.log_level" "$log_level"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.service_listen_address" "$service_listen_address"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "runtime.mwan3_active" "$mwan3_active"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.enable_yacd" "$enable_yacd"
     if [ "$enable_yacd" -eq 1 ]; then
-        signature_add "settings.enable_yacd_wan_access" "$enable_yacd_wan_access"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "settings.enable_yacd_wan_access" "$enable_yacd_wan_access"
         config_get yacd_secret_key "settings" "yacd_secret_key"
-        signature_add "settings.yacd_secret_key" "$yacd_secret_key"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "settings.yacd_secret_key" "$yacd_secret_key"
     fi
 
-    signature_add "settings.download_lists_via_proxy" "$download_lists_via_proxy"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.download_lists_via_proxy" "$download_lists_via_proxy"
     if [ "$download_lists_via_proxy" -eq 1 ]; then
         config_get download_lists_via_proxy_section "settings" "download_lists_via_proxy_section"
-        signature_add "settings.download_lists_via_proxy_section" "$download_lists_via_proxy_section"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "settings.download_lists_via_proxy_section" "$download_lists_via_proxy_section"
     fi
 
-    # Warm the Hub declaration caches in this (non-subshell) context: the
-    # per-rule walks below run in subshells and would otherwise re-query the Hub
-    # for every rule.
+    # ---- nft signature: settings ----
+    config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
+    config_get_bool exclude_ntp "settings" "exclude_ntp" 0
+    sig_tmp_add "$SIG_TMP_NFT" "settings.source_network_interfaces" "$source_network_interfaces"
+    sig_tmp_add "$SIG_TMP_NFT" "settings.exclude_ntp" "$exclude_ntp"
+
+    # ---- cron signature: settings ----
+    sig_tmp_add "$SIG_TMP_CRON" "settings.update_interval" "$update_interval"
+
+    # Warm the Hub declaration caches once for the walk (see module_action_outbounds).
     module_config_options > /dev/null
     module_action_outbounds > /dev/null
 
-    config_foreach append_sing_box_rule_signature "section"
+    config_foreach append_unified_rule_signature "section"
+
+    # The server walk appends through signature_add; point it at the sing-box
+    # accumulator.
+    RELOAD_SIGNATURE_TMPFILE="$SIG_TMP_SING_BOX"
     config_foreach append_sing_box_server_signature "server"
-    signature_finish
+
+    # cron = settings + list walk + subscription walk
+    cat "$SIG_TMP_LIST" >> "$SIG_TMP_CRON"
+    cat "$SIG_TMP_CRON_SUB" >> "$SIG_TMP_CRON"
+
+    RELOAD_STATE_SING_BOX_SIGNATURE="$(md5sum "$SIG_TMP_SING_BOX" | awk '{print $1}')"
+    RELOAD_STATE_NFT_SIGNATURE="$(md5sum "$SIG_TMP_NFT" | awk '{print $1}')"
+    RELOAD_STATE_ZAPRET_QUEUE_SIGNATURE="$(md5sum "$SIG_TMP_ZAPRET_QUEUE" | awk '{print $1}')"
+    RELOAD_STATE_ZAPRET_RUNTIME_SIGNATURE="$(md5sum "$SIG_TMP_ZAPRET_RUNTIME" | awk '{print $1}')"
+    RELOAD_STATE_BYEDPI_RUNTIME_SIGNATURE="$(md5sum "$SIG_TMP_BYEDPI_RUNTIME" | awk '{print $1}')"
+    RELOAD_STATE_LIST_SIGNATURE="$(md5sum "$SIG_TMP_LIST" | awk '{print $1}')"
+    RELOAD_STATE_CRON_SIGNATURE="$(md5sum "$SIG_TMP_CRON" | awk '{print $1}')"
+
+    rm -f "$SIG_TMP_SING_BOX" "$SIG_TMP_NFT" "$SIG_TMP_ZAPRET_QUEUE" "$SIG_TMP_ZAPRET_RUNTIME" \
+        "$SIG_TMP_BYEDPI_RUNTIME" "$SIG_TMP_LIST" "$SIG_TMP_CRON" "$SIG_TMP_CRON_SUB"
 }
 
-append_nft_rule_signature() {
-    local section="$1"
-    local ip_cidr ports community_lists community_subnet_lists remote_subnet_lists rule_set_with_subnets domain_ip_lists
 
-    rule_is_enabled "$section" || return 0
 
-    ip_cidr="$(get_rule_condition_commas_string "$section" "ip_cidr" "subnets")"
-    ports="$(get_rule_ports_commas_string "$section")"
-    config_get community_lists "$section" "community_lists"
-    community_subnet_lists="$(filter_community_subnet_lists "$community_lists")"
-    config_get remote_subnet_lists "$section" "remote_subnet_lists"
-    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
-    config_get domain_ip_lists "$section" "domain_ip_lists"
 
-    signature_add "rule.$section.ip_cidr" "$ip_cidr"
-    signature_add "rule.$section.ports" "$ports"
-    signature_add "rule.$section.community_subnet_lists" "$community_subnet_lists"
-    signature_add "rule.$section.remote_subnet_lists" "$remote_subnet_lists"
-    signature_add "rule.$section.rule_set_with_subnets" "$rule_set_with_subnets"
-    signature_add "rule.$section.domain_ip_lists" "$domain_ip_lists"
-}
 
-build_nft_signature() {
-    local source_network_interfaces exclude_ntp
 
-    signature_begin
-    config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
-    config_get_bool exclude_ntp "settings" "exclude_ntp" 0
-    signature_add "settings.source_network_interfaces" "$source_network_interfaces"
-    signature_add "settings.exclude_ntp" "$exclude_ntp"
-    config_foreach append_nft_rule_signature "section"
-    signature_finish
-}
 
-append_zapret_queue_signature() {
-    local section="$1"
 
-    rule_is_enabled "$section" || return 0
-    [ "$(get_rule_action "$section")" = "zapret" ] || return 0
 
-    signature_add "zapret_queue.section" "$section"
-}
 
-build_zapret_queue_signature() {
-    signature_begin
-    config_foreach append_zapret_queue_signature "section"
-    signature_finish
-}
 
-append_zapret_runtime_signature() {
-    local section="$1"
-    local domain domain_suffix community_lists rule_set rule_set_with_subnets domain_ip_lists user_domain_list_type items
 
-    rule_is_enabled "$section" || return 0
-    [ "$(get_rule_action "$section")" = "zapret" ] || return 0
 
-    domain="$(get_rule_condition_commas_string "$section" "domain" "domains")"
-    domain_suffix="$(get_rule_condition_commas_string "$section" "domain_suffix" "domains")"
-    config_get community_lists "$section" "community_lists"
-    config_get rule_set "$section" "rule_set"
-    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
-    config_get domain_ip_lists "$section" "domain_ip_lists"
-    config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
 
-    signature_add "zapret.$section.nfqws_opt" "$(get_rule_nfqws_opt "$section")"
-    signature_add "zapret.$section.domain" "$domain"
-    signature_add "zapret.$section.domain_suffix" "$domain_suffix"
-    signature_add "zapret.$section.community_lists" "$community_lists"
-    signature_add "zapret.$section.rule_set" "$rule_set"
-    signature_add "zapret.$section.rule_set_with_subnets" "$rule_set_with_subnets"
-    signature_add "zapret.$section.domain_ip_lists" "$domain_ip_lists"
-    signature_add "zapret.$section.user_domain_list_type" "$user_domain_list_type"
-    config_get items "$section" "local_domain_lists"
-    signature_add "zapret.$section.local_domain_lists" "$items"
-    config_get items "$section" "remote_domain_lists"
-    signature_add "zapret.$section.remote_domain_lists" "$items"
-
-    case "$user_domain_list_type" in
-    dynamic) config_get items "$section" "user_domains" ;;
-    text) config_get items "$section" "user_domains_text" ;;
-    *) items="" ;;
-    esac
-    signature_add "zapret.$section.user_domains" "$items"
-}
-
-build_zapret_runtime_signature() {
-    signature_begin
-    config_foreach append_zapret_runtime_signature "section"
-    signature_finish
-}
-
-append_byedpi_runtime_signature() {
-    local section="$1"
-    local byedpi_index
-
-    rule_is_enabled "$section" || return 0
-    [ "$(get_rule_action "$section")" = "byedpi" ] || return 0
-
-    byedpi_index="$(get_byedpi_rule_index "$section")"
-    signature_add "byedpi.$section.index" "$byedpi_index"
-    signature_add "byedpi.$section.byedpi_cmd_opts" "$(get_rule_byedpi_cmd_opts "$section")"
-}
-
-build_byedpi_runtime_signature() {
-    signature_begin
-    config_foreach append_byedpi_runtime_signature "section"
-    signature_finish
-}
-
-append_list_update_signature() {
-    local section="$1"
-    local ports community_lists community_subnet_lists remote_domain_lists remote_subnet_lists rule_set_with_subnets domain_ip_lists
-
-    rule_is_enabled "$section" || return 0
-
-    ports="$(get_rule_ports_commas_string "$section")"
-    config_get community_lists "$section" "community_lists"
-    community_subnet_lists="$(filter_community_subnet_lists "$community_lists")"
-    config_get remote_domain_lists "$section" "remote_domain_lists"
-    config_get remote_subnet_lists "$section" "remote_subnet_lists"
-    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
-    config_get domain_ip_lists "$section" "domain_ip_lists"
-
-    signature_add "lists.$section.ports" "$ports"
-    signature_add "lists.$section.community_subnet_lists" "$community_subnet_lists"
-    signature_add "lists.$section.remote_domain_lists" "$remote_domain_lists"
-    signature_add "lists.$section.remote_subnet_lists" "$remote_subnet_lists"
-    signature_add "lists.$section.rule_set_with_subnets" "$rule_set_with_subnets"
-    signature_add "lists.$section.domain_ip_lists" "$domain_ip_lists"
-}
-
-build_list_update_signature() {
-    signature_begin
-    config_foreach append_list_update_signature "section"
-    signature_finish
-}
-
-append_subscription_update_cron_signature() {
-    local section="$1"
-    local subscription_update_interval subscription_urls subscription_update_enabled
-
-    rule_is_subscription_proxy "$section" || return 0
-
-    config_get subscription_urls "$section" "subscription_urls"
-    config_get_bool subscription_update_enabled "$section" "subscription_update_enabled" 1
-    subscription_update_interval="$(get_subscription_update_interval_for_rule "$section")"
-
-    signature_add "subscription.$section.subscription_urls" "$subscription_urls"
-    signature_add "subscription.$section.subscription_update_enabled" "$subscription_update_enabled"
-    signature_add "subscription.$section.subscription_update_interval" "$subscription_update_interval"
-}
-
-build_cron_signature() {
-    local update_interval
-
-    signature_begin
-    update_interval="$(get_settings_update_interval)"
-    signature_add "settings.update_interval" "$update_interval"
-    config_foreach append_list_update_signature "section"
-    config_foreach append_subscription_update_cron_signature "section"
-    signature_finish
-}
 
 list_has_remote_references() {
     local items="$1"
@@ -2490,6 +2431,7 @@ list_has_word() {
     *" $value "*) return 0 ;;
     esac
 
+
     return 1
 }
 
@@ -2511,13 +2453,7 @@ capture_reload_state() {
     config_load "$PODKOP_CONFIG_NAME"
     RELOAD_STATE_SERVICE_TRIGGER_SIGNATURE="$(build_service_trigger_signature)"
     RELOAD_STATE_DNSMASQ_SIGNATURE="$(build_dnsmasq_signature)"
-    RELOAD_STATE_SING_BOX_SIGNATURE="$(build_sing_box_signature)"
-    RELOAD_STATE_NFT_SIGNATURE="$(build_nft_signature)"
-    RELOAD_STATE_ZAPRET_QUEUE_SIGNATURE="$(build_zapret_queue_signature)"
-    RELOAD_STATE_ZAPRET_RUNTIME_SIGNATURE="$(build_zapret_runtime_signature)"
-    RELOAD_STATE_BYEDPI_RUNTIME_SIGNATURE="$(build_byedpi_runtime_signature)"
-    RELOAD_STATE_LIST_SIGNATURE="$(build_list_update_signature)"
-    RELOAD_STATE_CRON_SIGNATURE="$(build_cron_signature)"
+    build_section_signatures
     RELOAD_STATE_URLTEST_ENABLED_SECTIONS="$(build_urltest_enabled_sections)"
     config_get_bool RELOAD_STATE_DONT_TOUCH_DHCP "settings" "dont_touch_dhcp" 0
 }
@@ -2845,6 +2781,14 @@ get_module_action_outbound_json() {
         printf '%s\n' "$resolved"
         return 0
     }
+
+    # Built-in actions never have a Hub manifest. Do not send several network
+    # requests for each of them on every save when the cache has no such row.
+    case "$action" in
+    direct | proxy | vpn | block | zapret | byedpi | outbound)
+        return 1
+        ;;
+    esac
 
     # The listing carried no row for this action. At boot that happens routinely:
     # the listing is fetched over the network K.R.O.T. is still bringing up, so
@@ -4895,8 +4839,27 @@ optimize_tcp_stack() {
 parse_generic_string_to_commas_string() {
     local string="$1"
 
-    printf "%s\n" "$string" | sed -e 's/[[:space:]]*\/\/.*$//' -e 's/[[:space:]]*#.*$//' | tr ',' '\n' | sed 's/\r//g' | \
-        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | awk 'BEGIN { first = 1 } { if (!first) printf ","; printf "%s", $0; first = 0 } END { if (!first) printf "\n" }'
+    [ -n "$string" ] || return 0
+
+    # One awk process does the whole pipeline: strip comments, split on
+    # commas, drop CR, trim, skip empties, and join with commas.
+    printf '%s\n' "$string" | awk '
+        {
+            sub(/[[:space:]]*\/\/.*$/, "")
+            sub(/[[:space:]]*#.*$/, "")
+            n = split($0, parts, /,/)
+            for (i = 1; i <= n; i++) {
+                item = parts[i]
+                gsub(/\r/, "", item)
+                sub(/^[[:space:]]+/, "", item)
+                sub(/[[:space:]]+$/, "", item)
+                if (item == "")
+                    continue
+                out = out (out == "" ? "" : ",") item
+            }
+        }
+        END { if (out != "") print out }
+    '
 }
 
 get_rule_condition_commas_string() {
@@ -6912,6 +6875,7 @@ sing_box_init_config() {
 
     PODKOP_URLTEST_SELECTOR_SWITCHES=""
     configured_rulesets=""
+    SB_CM_BATCH_FAKEIP_TAGS=""
     sing_box_configure_log
     sing_box_configure_inbounds
     sing_box_configure_dns
@@ -9053,6 +9017,9 @@ configure_outbound_handler() {
 
         selector_tag="$(get_outbound_tag_by_section "$section")"
 
+        # The urltest/selector tail below only appends outbounds and never
+        # reads the config back; queue it as one batch.
+        sing_box_cm_batch_begin
         if [ "$urltest_enabled" -eq 1 ]; then
             urltest_check_interval="$(get_urltest_check_interval_for_config "$section")"
             urltest_idle_timeout="$(get_urltest_idle_timeout_for_config "$section")"
@@ -9099,6 +9066,8 @@ configure_outbound_handler() {
 
             config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$PROXY_GROUP_OUTBOUND_TAGS_JSON" "$selector_default" "true")"
         fi
+        sing_box_cm_batch_flush "$config"
+        config="$SB_CM_BATCH_RESULT"
 
         write_subscription_outbound_link_cache "$section" "$PROXY_GROUP_LINKS_JSON" "$PROXY_GROUP_LINK_REFS_JSON"
         write_outbound_metadata "$section" "$PROXY_GROUP_NAMES_JSON" "$PROXY_GROUP_COUNTRIES_JSON" "$PROXY_GROUP_SERVERS_JSON"
@@ -9190,6 +9159,7 @@ configure_outbound_handler() {
 
 sing_box_configure_dns() {
     log "Configure the DNS section of a sing-box JSON configuration"
+    sing_box_cm_batch_begin
     config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
 
     log "Adding DNS Servers" "debug"
@@ -9204,7 +9174,12 @@ sing_box_configure_dns() {
     fi
 
     config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
+    # The facade helper spawns its own ucode process and reads the config, so
+    # the queued manager operations must be applied before it runs.
+    sing_box_cm_batch_flush "$config"
+    config="$SB_CM_BATCH_RESULT"
     config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
+    sing_box_cm_batch_begin
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
 
     log "Adding DNS Rules"
@@ -9221,6 +9196,8 @@ sing_box_configure_dns() {
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG")
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG" "rewrite_ttl" "$rewrite_ttl")
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_SERVICE_FAKEIP_DNS_RULE_TAG" "domain" "$service_domains")
+    sing_box_cm_batch_flush "$config"
+    config="$SB_CM_BATCH_RESULT"
 }
 
 # Add HaGeZi DNS blocklist domains as reject rules
@@ -9325,6 +9302,7 @@ sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
     local output_network_interface outbound_mark
+    sing_box_cm_batch_begin
     outbound_mark="$((NFT_OUTBOUND_MARK))"
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
@@ -9350,6 +9328,11 @@ sing_box_configure_route() {
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "port" "53")
     config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
 
+    # Facade helpers below spawn their own ucode process and read the config;
+    # apply the queued manager operations first.
+    sing_box_cm_batch_flush "$config"
+    config="$SB_CM_BATCH_RESULT"
+
     config=$(sing_box_cf_add_single_key_reject_rule "$config" "" "ip_version" 6)
 
     local disable_quic
@@ -9370,8 +9353,11 @@ sing_box_configure_route() {
     config_get routing_excluded_ips "settings" "routing_excluded_ips"
     if [ -n "$routing_excluded_ips" ]; then
         rule_tag="$(gen_id)"
+        sing_box_cm_batch_begin
         config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
         config_list_foreach "settings" "routing_excluded_ips" exclude_source_ip_from_routing_handler "$rule_tag"
+        sing_box_cm_batch_flush "$config"
+        config="$SB_CM_BATCH_RESULT"
     fi
 
     config_foreach include_source_ips_in_routing_handler "section"
@@ -9457,9 +9443,18 @@ create_route_rule_for_action() {
         config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$inbound_tag" "$zapret_outbound_tag")
         ;;
     direct)
-        local direct_outbound_tag
+        local direct_outbound_tag direct_tls_fragment
         direct_outbound_tag="$(get_outbound_tag_by_section "$section")"
         config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$inbound_tag" "$direct_outbound_tag")
+        config_get direct_tls_fragment "$section" "direct_tls_fragment" "disabled"
+        case "$direct_tls_fragment" in
+        record)
+            config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "tls_record_fragment" "true")
+            ;;
+        tls)
+            config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "tls_fragment" "true")
+            ;;
+        esac
         ;;
     block)
         config=$(sing_box_cm_add_reject_route_rule "$config" "$rule_tag" "$inbound_tag")
@@ -9492,7 +9487,23 @@ ensure_fakeip_dns_route_rule() {
     local tag="$1"
     local rewrite_ttl
 
-    dns_route_rule_exists "$tag" && return 0
+    if [ "$SB_CM_BATCH_ACTIVE" = "1" ]; then
+        # Inside a batch the config variable is stale: rules queued in this
+        # batch are tracked in SB_CM_BATCH_FAKEIP_TAGS, and the config itself
+        # only reflects the state at batch begin.
+        case ",$SB_CM_BATCH_FAKEIP_TAGS," in
+        *",$tag,"*)
+            return 0
+            ;;
+        esac
+        dns_route_rule_exists "$tag" && {
+            SB_CM_BATCH_FAKEIP_TAGS="${SB_CM_BATCH_FAKEIP_TAGS:+$SB_CM_BATCH_FAKEIP_TAGS,}$tag"
+            return 0
+        }
+        SB_CM_BATCH_FAKEIP_TAGS="${SB_CM_BATCH_FAKEIP_TAGS:+$SB_CM_BATCH_FAKEIP_TAGS,}$tag"
+    else
+        dns_route_rule_exists "$tag" && return 0
+    fi
 
     config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$tag")
     config_get rewrite_ttl "settings" "dns_rewrite_ttl" "60"
@@ -9768,6 +9779,7 @@ configure_route_rule_handler() {
     fi
 
     route_rule_tag="$(gen_id)"
+    sing_box_cm_batch_begin
     create_route_rule_for_action "$section" "$action" "$route_rule_tag"
 
     local domain_json domain_suffix_json domain_keyword_json domain_regex_json
@@ -9829,6 +9841,11 @@ configure_route_rule_handler() {
     if [ -n "$domain_ip_lists" ]; then
         configure_domain_ip_lists "$section" "$route_rule_tag"
     fi
+
+    # The resolve-matcher check below reads the config; apply the queued
+    # route-rule operations first so it sees this rule's matchers.
+    sing_box_cm_batch_flush "$config"
+    config="$SB_CM_BATCH_RESULT"
 
     if [ "$action" = "proxy" ] || [ "$action" = "outbound" ] || [ "$action" = "vpn" ] || [ "$action" = "byedpi" ]; then
         local resolve_real_ip_for_routing
@@ -12027,15 +12044,28 @@ check_dns_available() {
         dns_on_router=1
     fi
 
-    # Check bootstrap DNS server
+    # Check bootstrap DNS server (try multiple times with fallback servers)
     if [ -n "$bootstrap_dns_server" ]; then
         local bs_host bs_port
         bs_host="$(url_get_host "$bootstrap_dns_server")"
         bs_port="$(url_get_port "$bootstrap_dns_server")"
+        
+        # Try primary bootstrap DNS with longer timeout
         if [ -n "$bs_port" ]; then
-            dig @"$bs_host" -p "$bs_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && bootstrap_dns_status=1
+            dig @"$bs_host" -p "$bs_port" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && bootstrap_dns_status=1
         else
-            dig @"$bs_host" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && bootstrap_dns_status=1
+            dig @"$bs_host" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && bootstrap_dns_status=1
+        fi
+        
+        # Fallback: try alternative DNS servers if primary fails
+        if [ "$bootstrap_dns_status" -eq 0 ]; then
+            for fallback_dns in 8.8.8.8 9.9.9.9 1.1.1.1; do
+                dig @"$fallback_dns" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && {
+                    bootstrap_dns_status=1
+                    bootstrap_dns_server="$bootstrap_dns_server (fallback: $fallback_dns)"
+                    break
+                }
+            done
         fi
     fi
 
@@ -13131,6 +13161,9 @@ list_update_if_due)
     ;;
 sidecar_watchdog)
     sidecar_watchdog
+    ;;
+sing_box_watchdog)
+    sing_box_watchdog
     ;;
 subscription_update)
     subscription_update "$2" "$3"
