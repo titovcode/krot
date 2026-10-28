@@ -271,13 +271,20 @@ function addNameColumnWithDrag(sectionEl) {
 const EntryPoint = {
   async render() {
     main.injectGlobalStyles();
-    const serverCapabilities = { singBoxExtended: false };
+    const serverCapabilities = {
+      singBoxExtended: false,
+      hageziInstalled: false,
+    };
 
     try {
       const systemInfoResponse = await main.PodkopShellMethods.getSystemInfo();
       serverCapabilities.singBoxExtended = Boolean(
         systemInfoResponse?.success &&
           Number(systemInfoResponse.data?.sing_box_extended) === 1,
+      );
+      serverCapabilities.hageziInstalled = Boolean(
+        systemInfoResponse?.success &&
+          Number(systemInfoResponse.data?.hagezi_installed) === 1,
       );
     } catch (error) {
       console.warn("Failed to load K.R.O.T. server capabilities", error);
@@ -341,7 +348,7 @@ const EntryPoint = {
     settingsSection.cfgsections = function () {
       return ["settings"];
     };
-    settings.createSettingsContent(settingsSection);
+    settings.createSettingsContent(settingsSection, serverCapabilities);
 
     const diagnosticSection = podkopMap.section(
       form.TypedSection,

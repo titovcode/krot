@@ -198,20 +198,42 @@ set -e
 echo "Your Module updated successfully"
 ```
 
-## Version Detection
+## Installation Status and Version Detection
 
-K.R.O.T. detects installed module versions through:
+The manifest `version` is the **latest available** version. It does not tell
+K.R.O.T. whether the module is installed. The Modules page gets that state
+from the router, using the manifest's `component` value.
 
-1. **VERSION file**: `/opt/your-module/VERSION` or `/etc/your-module/VERSION`
-2. **Binary version**: Running `your-module --version`
-3. **Package manager**: `opkg list-installed your-module` or `apk info -e your-module`
+A component integration has two parts in `krot/files/usr/lib/updater.sh`:
 
-Implement version detection in your install script:
+1. `hub_module_installed_status()` must recognize the component, call an
+   installation check such as `is_your_module_installed()`, and set
+   `hub_installed_version` when the check succeeds.
+2. `hub_detect_installed_version()` should return the version actually present
+   on the router. It is used in the successful install action response.
+
+The installation check must look for real module files, a package, or another
+reliable runtime marker — not merely the presence of `module.json`. For a new
+third-party component, adding this backend integration is currently required;
+a `VERSION` file alone does not register an unknown component as installed.
+
+Write the release actually installed at the end of `install.sh`:
 
 ```sh
-# Write version file for Hub detection
+# Example: use the path registered in the component's version detector
 echo "1.0.0" > /etc/your-module/VERSION
 ```
+
+The remove script must remove every file or package used by the installation
+check, including the version marker. Otherwise the module will still appear
+installed after removal.
+
+After a successful install or remove action, K.R.O.T. refreshes the Hub module
+cache, applies changed runtime settings with one differential reload, and the
+UI updates the module's version and buttons immediately. Module scripts must
+not restart or reload K.R.O.T. themselves: the Hub owns that final apply step.
+Do not edit `/tmp/krot-hub-modules.json` from module scripts; it is generated
+cache, not an installation database.
 
 ## Using Your Module
 
@@ -271,8 +293,13 @@ See `hub/xray/` for a complete example:
    ```sh
    krot component_action hub hub_install_your-module
    ```
-4. Check the Rules UI for your action
-5. Test removal:
+4. Without reloading the Modules page, verify that the installed version and
+   the **Update** / **Remove** buttons appear immediately.
+5. Check the Rules UI for your action.
+6. Test removal:
    ```sh
    krot component_action hub hub_remove_your-module
    ```
+7. Again without reloading, verify that the card returns to **Install**. If it
+   does not, check the component detector and the files removed by `remove.sh`;
+   do not work around the problem by editing the generated Hub cache.

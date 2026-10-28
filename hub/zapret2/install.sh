@@ -199,12 +199,8 @@ for svc in zapret zapret2; do
     fi
 done
 
-# Pick up the new provider: K.R.O.T. re-evaluates the provider on reload and
-# starts the nfqws2 processes itself.
-if [ -x /etc/init.d/krot ]; then
-    msg "Reloading K.R.O.T. to pick up the provider..."
-    /etc/init.d/krot reload 2>/dev/null || true
-fi
+# The Hub refreshes its module cache and applies K.R.O.T. once after this
+# script returns. Do not reload here: that used to apply the same change twice.
 
 INSTALLED_VERSION="$("$NFQ_BIN" --version 2>/dev/null | sed -n '1s/^.*version[[:space:]]*//p' | awk '{print $1; exit}')"
 msg ""

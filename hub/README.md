@@ -164,25 +164,39 @@ The bundled `xray` module is the reference example: it contributes the
 automatically. (Note: Xray-core ignores a `"confdir"` key inside the JSON
 config — only the command line flag loads extra configs.)
 
-## Version handling (dynamic — no code edits needed)
+## Installation status and version handling
 
-K.R.O.T. determines module versions automatically:
+These are two separate values:
 
-- **Installed version** is reported from the router itself, in priority order:
-  1. the `VERSION` file your install script writes (e.g. `/opt/olcrtc/VERSION`),
-  2. live detection for the built-in components (package manager or binary
-     `--version` for zapret, byedpi, adguard),
-  3. your `module.json` `version` (last-resort fallback).
+- **Installed state and installed version** come from the router. The
+  `component` in `module.json` must be registered in
+  `hub_module_installed_status()` in `krot/files/usr/lib/updater.sh`. Its
+  installation check must detect real module files or a package and set
+  `hub_installed_version`. Register the component in
+  `hub_detect_installed_version()` as well so install actions return the actual
+  version. A new third-party component therefore needs backend integration;
+  writing a `VERSION` file alone is not enough to mark it installed.
 - **Latest available version** comes from `module.json` `version`. Publish a
-  new release, update this single field, and the Hub tab shows
-  "Update available: x.y.z" next to the module until the user updates it.
+  new release, update this field, and the Hub tab shows
+  "Update available: x.y.z" until the user updates it.
 
-Recommended: at the end of `install.sh`, write the release you actually
-installed so the Hub always shows the real version:
+At the end of `install.sh`, write the release actually installed to the path
+used by the component detector:
 
 ```sh
 echo "1.2.3" > /opt/your-module/VERSION
 ```
+
+The remove script must delete the files or package used by the installation
+check, including the version marker. After successful install/remove actions,
+K.R.O.T. refreshes the module cache, applies the changed runtime configuration
+with one differential `reload on_config_change`, and immediately updates the
+card's version and buttons; no page reload or full K.R.O.T. restart is needed.
+Module scripts must not reload K.R.O.T. themselves or write the generated
+`/tmp/krot-hub-modules.json` cache directly.
+
+See [MODULE_DEVELOPMENT.md](MODULE_DEVELOPMENT.md#installation-status-and-version-detection)
+for the full component contract.
 
 ## install.sh
 

@@ -29,7 +29,6 @@ if [ ! -x /opt/AdGuardHome/AdGuardHome ]; then
     if command -v uci >/dev/null 2>&1; then
         if [ "$(uci -q get krot.settings.dns_server 2>/dev/null || true)" = "127.0.0.1:5353" ]; then
             restore_krot_dns
-            /etc/init.d/krot reload 2>/dev/null || /etc/init.d/krot restart 2>/dev/null || true
         fi
     fi
     exit 0
@@ -65,7 +64,7 @@ if [ -x /etc/init.d/avahi-daemon ]; then
     /etc/init.d/avahi-daemon start 2>/dev/null || true
 fi
 
-# K.R.O.T. will be restarted by the Hub installer (updater.sh) so sing-box
-# picks up the restored dns_server / dns_type. No restart here.
+# The Hub applies the restored dns_server / dns_type with one differential
+# reload after this script returns. No K.R.O.T. reload here.
 
 msg "AdGuard Home removed"

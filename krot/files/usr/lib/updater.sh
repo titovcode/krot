@@ -108,10 +108,10 @@ hub_guarded_call() {
 
     [ -n "$UPDATES_TMP_DIR" ] || created_here=1
 
-    # Use subshell to catch exit calls from the command
-    (
-        "$@"
-    )
+    # Run in the current shell: the callee may create UPDATES_TMP_DIR lazily,
+    # and the cleanup below must see that value. A subshell would lose it and
+    # leak one tmpfs directory per call.
+    "$@"
     status=$?
 
     if [ -n "$created_here" ] && [ -n "$UPDATES_TMP_DIR" ]; then
@@ -1890,7 +1890,17 @@ component_action() {
     trap updates_component_action_cleanup EXIT HUP
     trap 'updates_component_action_cleanup; exit 130' INT TERM
 
-    updates_acquire_component_lock || updates_fail "${component:-unknown}" "${action:-unknown}" "Another component action is already running"
+    # Update checks are read-only and often run together (Dashboard and Modules
+    # tabs). They must not compete for the mutex that protects package installs
+    # and Hub mutations. Their cache writes are atomic, and cleanup still
+    # releases the lock for actions that actually acquired it.
+    case "$action" in
+    check_update)
+        ;;
+    *)
+        updates_acquire_component_lock || updates_fail "${component:-unknown}" "${action:-unknown}" "Another component action is already running"
+        ;;
+    esac
     updates_capture_podkop_running_state
 
     case "$component:$action" in
@@ -1990,6 +2000,9 @@ hub_detect_installed_version() {
             /opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -n 1 \
                 | sed 's/^AdGuard Home, version //; s/^v//'
             ;;
+        hagezi)
+            [ -f /etc/krot/hagezi/version ] && head -n 1 /etc/krot/hagezi/version 2>/dev/null
+            ;;
         olcrtc)
             [ -f /opt/olcrtc/VERSION ] && { head -n 1 /opt/olcrtc/VERSION 2>/dev/null; return 0; }
             ;;
@@ -2045,6 +2058,10 @@ hub_module_installed_status() {
                 hub_installed_version="$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1 || true)"
             hub_installed_version="${hub_installed_version#AdGuard Home, version }"
             hub_installed_version="${hub_installed_version#v}"
+            ;;
+        hagezi)
+            is_hagezi_installed || return 1
+            hub_installed_version="$(head -n 1 /etc/krot/hagezi/version 2>/dev/null || true)"
             ;;
         olcrtc)
             is_olcrtc_installed || return 1
@@ -2664,6 +2681,10 @@ _hub_module_config_options() {
     fi
     [ -s "$cache_file" ] || return 0
 
+    # Initialize in this shell before the command substitution below. Otherwise
+    # the helper creates UPDATES_TMP_DIR in a child shell and the guard cannot
+    # see (and therefore cannot remove) that directory.
+    updates_init_tmp_dir || return 0
     helper="$(hub_modules_ucode_script)" || return 0
     updates_command_exists ucode || return 0
 
@@ -2696,6 +2717,10 @@ _hub_module_action_outbounds() {
     fi
     [ -s "$cache_file" ] || return 0
 
+    # Initialize in this shell before the command substitution below. Otherwise
+    # the helper creates UPDATES_TMP_DIR in a child shell and the guard cannot
+    # see (and therefore cannot remove) that directory.
+    updates_init_tmp_dir || return 0
     helper="$(hub_modules_ucode_script)" || return 0
     updates_command_exists ucode || return 0
 
@@ -2715,6 +2740,10 @@ _hub_module_action_outbounds() {
 # would poison the cache with a partial listing that the Modules tab would then
 # render as the complete set.
 hub_fetch_action_outbound() {
+    hub_guarded_call _hub_fetch_action_outbound "$@"
+}
+
+_hub_fetch_action_outbound() {
     local action="$1"
     local hub_repo url index_file tmp_dir module_id manifest_file helper rows component
     local result="[" first=1
@@ -2725,6 +2754,7 @@ hub_fetch_action_outbound() {
     *[!A-Za-z0-9_-]*) return 1 ;;
     esac
     updates_command_exists ucode || return 1
+    updates_init_tmp_dir || return 1
     helper="$(hub_modules_ucode_script)" || return 1
 
     tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/hub-action.XXXXXX" 2> /dev/null)" || return 1
@@ -3018,17 +3048,19 @@ hub_install_module() {
         installed_version="$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/"$//')"
     fi
 
-    # Restart K.R.O.T. to pick up any UCI changes the install script made
-    # (e.g. dns_server, dns_type, outbounds). Use restart (not reload) —
-    # sing-box needs to fully rebuild its config.
-    if [ -x /etc/init.d/krot ]; then
-        updates_log "Restarting K.R.O.T. after ${module_id} install"
-        /etc/init.d/krot restart 2>/dev/null || true
-    fi
-
-    # Refresh the cached hub module list so LuCI shows the new state
-    # without requiring a full K.R.O.T. update.
+    # Refresh first so reload sees the module's newly installed actions and
+    # config declarations rather than the stale pre-install listing.
     hub_refresh_modules_cache
+    # Settings pages use system-info capabilities to decide which module
+    # options to render; update that cache in the same completed action.
+    refresh_system_info_cache >/dev/null 2>&1 || true
+
+    # Apply only the configuration that actually changed. A full restart here
+    # needlessly rebuilt nft, DNS, sing-box and every sidecar on every install.
+    if [ -x /etc/init.d/krot ]; then
+        updates_log "Applying K.R.O.T. configuration after ${module_id} install"
+        /etc/init.d/krot reload on_config_change 2>/dev/null || true
+    fi
 
     updates_success "hub" "hub_install_${module_id}" "${module_id} has been installed" "" "$installed_version" 1 "latest"
 }
@@ -3134,17 +3166,14 @@ hub_remove_module() {
             done
         fi
 
-        # Restart K.R.O.T. to pick up the changed UCI state. Use restart
-        # (not just reload) — the install/remove script may have flipped
-        # dns_server / dns_type, and sing-box needs to fully rebuild.
-        if [ -x /etc/init.d/krot ]; then
-            updates_log "Restarting K.R.O.T. after ${module_id} removal"
-            /etc/init.d/krot restart 2>/dev/null || true
-        fi
-
-        # Refresh the cached hub module list so LuCI shows the new state
-        # without requiring a full K.R.O.T. update.
+        # The reload must see the removed module disappear from the listing.
         hub_refresh_modules_cache
+        refresh_system_info_cache >/dev/null 2>&1 || true
+
+        if [ -x /etc/init.d/krot ]; then
+            updates_log "Applying K.R.O.T. configuration after ${module_id} removal"
+            /etc/init.d/krot reload on_config_change 2>/dev/null || true
+        fi
 
         updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
         return
@@ -3170,12 +3199,12 @@ hub_remove_module() {
             rm -rf /var/run/krot/zapret /tmp/krot/zapret 2>/dev/null || true
             # Disable any rules still using the zapret action
             hub_disable_rules_with_action "zapret"
-            # Restart K.R.O.T. to clean up nft rules
-            if [ -x /etc/init.d/krot ]; then
-                updates_log "Restarting K.R.O.T. after zapret2 removal"
-                /etc/init.d/krot restart 2>/dev/null || true
-            fi
             hub_refresh_modules_cache
+            refresh_system_info_cache >/dev/null 2>&1 || true
+            if [ -x /etc/init.d/krot ]; then
+                updates_log "Applying K.R.O.T. configuration after zapret2 removal"
+                /etc/init.d/krot reload on_config_change 2>/dev/null || true
+            fi
             updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
             return
             ;;
@@ -3206,15 +3235,12 @@ hub_remove_module() {
             || updates_fail "hub" "hub_remove_${module_id}" "Failed to remove ${pkg_name} via opkg"
     fi
 
-    # Restart K.R.O.T. to clean up nft/sing-box rules
-    if [ -x /etc/init.d/krot ]; then
-        updates_log "Restarting K.R.O.T. after ${module_id} removal"
-        /etc/init.d/krot reload 2>/dev/null || true
-    fi
-
-    # Refresh the cached hub module list so LuCI shows the new state
-    # without requiring a full K.R.O.T. update.
     hub_refresh_modules_cache
+    refresh_system_info_cache >/dev/null 2>&1 || true
+    if [ -x /etc/init.d/krot ]; then
+        updates_log "Applying K.R.O.T. configuration after ${module_id} removal"
+        /etc/init.d/krot reload on_config_change 2>/dev/null || true
+    fi
 
     updates_success "hub" "hub_remove_${module_id}" "${module_id} has been removed" "" "" 0 ""
 }

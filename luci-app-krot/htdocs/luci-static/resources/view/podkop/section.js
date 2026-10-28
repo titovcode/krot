@@ -345,6 +345,7 @@ const RESERVED_RULE_CONFIG_OPTIONS = [
   "label",
   "icon",
   "outbound_json",
+  "direct_tls_fragment",
   "nfqws_opt",
   "byedpi_cmd_opts",
 ];
@@ -3070,6 +3071,23 @@ function createSectionContent(section) {
       }
     });
   };
+  o = section.taboption(
+    "settings",
+    form.ListValue,
+    "direct_tls_fragment",
+    _("Direct TLS anti-DPI"),
+    _(
+      "Fragment the TLS ClientHello for direct connections. Applies only to this rule; record fragmentation is faster.",
+    ),
+  );
+  o.value("disabled", _("Disabled"));
+  o.value("record", _("Fragment TLS records (recommended)"));
+  o.value("tls", _("Fragment TLS handshake (slower)"));
+  o.default = "disabled";
+  o.rmempty = false;
+  o.modalonly = true;
+  o.depends("action", "direct");
+
   o = section.taboption(
     "settings",
     form.TextValue,

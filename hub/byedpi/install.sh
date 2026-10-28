@@ -125,10 +125,7 @@ if [ -x /etc/init.d/byedpi ]; then
     /etc/init.d/byedpi disable 2>/dev/null || true
 fi
 
-# Restart K.R.O.T. to apply integration
-if [ -x /etc/init.d/krot ]; then
-    msg "Restarting K.R.O.T..."
-    /etc/init.d/krot reload 2>/dev/null || true
-fi
+# The Hub applies K.R.O.T. once after this script returns; a second reload
+# here only repeated the same configuration work.
 
 msg "ByeDPI installed successfully"

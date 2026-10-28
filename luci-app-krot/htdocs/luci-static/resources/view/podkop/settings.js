@@ -12,7 +12,7 @@ function isSingBoxDuration(value) {
   return /^([0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h|d))+$/.test(value);
 }
 
-function createSettingsContent(section) {
+function createSettingsContent(section, capabilities) {
   let o = section.option(
     form.ListValue,
     "dns_type",
@@ -69,50 +69,50 @@ function createSettingsContent(section) {
     return validation.message;
   };
 
-  // HaGeZi — DNS Blocklists section
-  o = section.option(
-    form.Flag,
-    "hagezi_enabled",
-    _("Enable HaGeZi ad blocking"),
-    _(
-      "Block ads, trackers and malware using HaGeZi DNS blocklists. Install the HaGeZi module from the Hub first.",
-    ),
-  );
-  o.default = "0";
-  o.rmempty = false;
+  if (capabilities?.hageziInstalled) {
+    // HaGeZi settings are available only while the module is installed.
+    o = section.option(
+      form.Flag,
+      "hagezi_enabled",
+      _("Enable HaGeZi ad blocking"),
+      _("Block ads, trackers and malware using HaGeZi DNS blocklists."),
+    );
+    o.default = "0";
+    o.rmempty = false;
 
-  o = section.option(
-    form.ListValue,
-    "hagezi_list",
-    _("HaGeZi Blocklist"),
-    _(
-      "Select blocklist: Normal (balanced), Pro (extended), Ultimate (maximum protection)",
-    ),
-  );
-  o.value("multi", _("HaGeZi Multi NORMAL (recommended)"));
-  o.value("pro", _("HaGeZi Multi PRO (extended)"));
-  o.value("ultimate", _("HaGeZi Multi ULTIMATE (aggressive)"));
-  o.default = "multi";
-  o.rmempty = false;
-  o.depends("hagezi_enabled", "1");
+    o = section.option(
+      form.ListValue,
+      "hagezi_list",
+      _("HaGeZi Blocklist"),
+      _(
+        "Select blocklist: Normal (balanced), Pro (extended), Ultimate (maximum protection)",
+      ),
+    );
+    o.value("multi", _("HaGeZi Multi NORMAL (recommended)"));
+    o.value("pro", _("HaGeZi Multi PRO (extended)"));
+    o.value("ultimate", _("HaGeZi Multi ULTIMATE (aggressive)"));
+    o.default = "multi";
+    o.rmempty = false;
+    o.depends("hagezi_enabled", "1");
 
-  o = section.option(
-    form.DummyValue,
-    "hagezi_last_update",
-    _("Blocklist last updated"),
-    _("Last time the HaGeZi blocklist was downloaded"),
-  );
-  o.default = _("Never");
-  o.depends("hagezi_enabled", "1");
+    o = section.option(
+      form.DummyValue,
+      "hagezi_last_update",
+      _("Blocklist last updated"),
+      _("Last time the HaGeZi blocklist was downloaded"),
+    );
+    o.default = _("Never");
+    o.depends("hagezi_enabled", "1");
 
-  o = section.option(
-    form.DummyValue,
-    "hagezi_domains_count",
-    _("Blocked domains"),
-    _("Number of domains in the current blocklist"),
-  );
-  o.default = "0";
-  o.depends("hagezi_enabled", "1");
+    o = section.option(
+      form.DummyValue,
+      "hagezi_domains_count",
+      _("Blocked domains"),
+      _("Number of domains in the current blocklist"),
+    );
+    o.default = "0";
+    o.depends("hagezi_enabled", "1");
+  }
 
   o = section.option(
     form.Value,
