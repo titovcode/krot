@@ -497,6 +497,9 @@ msgstr "Не удалось скопировать!"
 msgid "Failed to execute"
 msgstr "Не удалось выполнить"
 
+msgid "Failed to load modules"
+msgstr "Не удалось загрузить модули"
+
 msgid "Failed to update subscriptions"
 msgstr "Не удалось обновить подписки"
 
@@ -809,6 +812,24 @@ msgstr "Максимальная разница времени ответа в �
 msgid "Memory Usage"
 msgstr "Использование памяти"
 
+msgid "Router"
+msgstr "Роутер"
+
+msgid "CPU Temp"
+msgstr "Температура CPU"
+
+msgid "Memory"
+msgstr "Память"
+
+msgid "free"
+msgstr "свободно"
+
+msgid "HaGeZi — DNS Blocklists"
+msgstr "HaGeZi — DNS-блоклисты"
+
+msgid "Uptime"
+msgstr "Аптайм"
+
 msgid "Method"
 msgstr "Метод"
 
@@ -844,6 +865,9 @@ msgstr "Стратегия NFQWS"
 
 msgid "NFQWS strategy cannot be empty"
 msgstr "Стратегия NFQWS не может быть пустой"
+
+msgid "n/a"
+msgstr "н/д"
 
 msgid "No active connections"
 msgstr "Нет активных подключений"
@@ -1168,6 +1192,12 @@ msgstr "Секции"
 
 msgid "Security"
 msgstr "Защита"
+
+msgid "Sidecar Egress Interface"
+msgstr "Интерфейс выхода sidecar"
+
+msgid "Interface used by this Xray sidecar to reach the proxy server. Leave empty for regular WAN. Does not change the rule's client routing."
+msgstr "Интерфейс, через который этот sidecar Xray подключается к прокси-серверу. Оставьте пустым для обычного WAN. Маршрутизация клиентов в самом правиле не меняется."
 
 msgid "Select a loaded server or enter an exact server name"
 msgstr "Выберите загруженный сервер или введите точное имя сервера"
@@ -1595,6 +1625,9 @@ msgstr "WAN"
 msgid "WAN public IP"
 msgstr "Публичный WAN IP"
 
+msgid "WAN traffic"
+msgstr "Трафик WAN"
+
 msgid "Warning: %s cannot be used together with %s. Previous selections have been removed."
 msgstr "Предупреждение: %s нельзя использовать вместе с %s. Предыдущие варианты были удалены."
 
@@ -1630,3 +1663,78 @@ msgstr "Бинарник провайдера Zapret недоступен"
 
 msgid "Update available"
 msgstr "Доступно обновление"
+
+msgid "Enable HaGeZi ad blocking"
+msgstr "Включить блокировку рекламы HaGeZi"
+
+msgid "Block ads, trackers and malware using HaGeZi DNS blocklists."
+msgstr "Блокирует рекламу, трекеры и вредоносные домены по DNS-спискам HaGeZi."
+
+msgid "HaGeZi Blocklist"
+msgstr "Список HaGeZi"
+
+msgid "Select blocklist. Full versions block more but use more RAM; Mini versions are for low-memory devices. The list is downloaded automatically on Save & Apply."
+msgstr "Выбор списка блокировки. Полные версии блокируют больше, но потребляют больше ОЗУ; Mini-версии — для устройств с малым объёмом памяти. Список скачивается автоматически при нажатии «Сохранить и применить»."
+
+msgid "HaGeZi Multi LIGHT (minimal)"
+msgstr "HaGeZi Multi LIGHT (минимальный)"
+
+msgid "HaGeZi Multi NORMAL (recommended)"
+msgstr "HaGeZi Multi NORMAL (рекомендуется)"
+
+msgid "HaGeZi Multi PRO (extended)"
+msgstr "HaGeZi Multi PRO (расширенный)"
+
+msgid "HaGeZi Multi PRO++ (maximum)"
+msgstr "HaGeZi Multi PRO++ (максимальный)"
+
+msgid "HaGeZi Multi ULTIMATE (aggressive)"
+msgstr "HaGeZi Multi ULTIMATE (агрессивный)"
+
+msgid "HaGeZi PRO Mini (low memory)"
+msgstr "HaGeZi PRO Mini (мало памяти)"
+
+msgid "HaGeZi PRO++ Mini (low memory)"
+msgstr "HaGeZi PRO++ Mini (мало памяти)"
+
+msgid "HaGeZi ULTIMATE Mini (low memory)"
+msgstr "HaGeZi ULTIMATE Mini (мало памяти)"
+
+msgid "HaGeZi TIF Mini (threats only)"
+msgstr "HaGeZi TIF Mini (только угрозы)"
+
+msgid "HaGeZi TIF Medium (threats only, large)"
+msgstr "HaGeZi TIF Medium (только угрозы, большой)"
+
+msgid "Blocklist update"
+msgstr "Обновление списка"
+
+msgid "Update now"
+msgstr "Обновить сейчас"
+
+msgid "Blocklist last updated"
+msgstr "Список обновлён"
+
+msgid "Last time the HaGeZi blocklist was downloaded"
+msgstr "Когда список блокировки HaGeZi был скачан в последний раз"
+
+msgid "Blocked domains"
+msgstr "Заблокировано доменов"
+
+msgid "Number of domains in the current blocklist"
+msgstr "Количество доменов в текущем списке блокировки"
+
+msgid "HaGeZi blocklist updated: %s domains blocked."
+msgstr "Список HaGeZi обновлён: заблокировано доменов: %s."
+
+msgid "HaGeZi blocklist update failed: %s"
+msgstr "Не удалось обновить список HaGeZi: %s"
+
+msgid "Never"
+msgstr "Никогда"
+
+msgid "Timeout"
+msgstr "Истекло время ожидания"
+
+msgid "Update failed on the router"
+msgstr "Не удалось выполнить обновление на роутере"

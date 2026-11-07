@@ -345,6 +345,7 @@ const RESERVED_RULE_CONFIG_OPTIONS = [
   "label",
   "icon",
   "outbound_json",
+  "egress_interface",
   "direct_tls_fragment",
   "nfqws_opt",
   "byedpi_cmd_opts",
@@ -573,14 +574,17 @@ function updateActionProvidersAvailabilityFromSystemInfo(systemInfo) {
   });
 }
 
-if (typeof window !== "undefined") {
+let _actionProvidersListenerAttached = false;
+if (typeof window !== "undefined" && !_actionProvidersListenerAttached) {
+  _actionProvidersListenerAttached = true;
   window.addEventListener(ACTION_PROVIDERS_AVAILABILITY_EVENT, (event) => {
     updateActionProvidersAvailabilityState(event.detail);
   });
 }
 
-if (main.store && typeof main.store.subscribe === "function") {
-  main.store.subscribe((next, _prev, diff) => {
+let _storeUnsubscribe = null;
+if (main.store && typeof main.store.subscribe === "function" && !_storeUnsubscribe) {
+  _storeUnsubscribe = main.store.subscribe((next, _prev, diff) => {
     if (!diff || diff.diagnosticsSystemInfo) {
       updateActionProvidersAvailabilityFromSystemInfo(
         next.diagnosticsSystemInfo,
@@ -810,7 +814,7 @@ function getActionOptionLabel(action) {
     case "direct":
       return "Direct";
     case "vpn":
-      return "VPN";
+      return "Interfaces";
     case "zapret":
       return "Zapret2";
     case "byedpi":
@@ -847,7 +851,7 @@ function populateActionOptionValues(option) {
   delete option.vallist;
 
   option.value("proxy", "Proxy");
-  option.value("vpn", "VPN");
+  option.value("vpn", "Interfaces");
   option.value("direct", "Direct");
   option.value("block", "Block");
   if (isZapretInstalledForUi()) {
@@ -965,7 +969,46 @@ function buildModuleConfigOption(target, moduleAction) {
   return o;
 }
 
+function ensureSidecarEgressOption(target) {
+  // This option must exist before LuCI clones the options for a rule modal.
+  // Module manifests load asynchronously, so creating a widget only after
+  // their arrival can leave the first modal with an older set of options.
+  if (target.getOption("egress_interface")) {
+    return;
+  }
+
+  const egress = target.taboption(
+    "settings",
+    widgets.DeviceSelect,
+    "egress_interface",
+    _("Sidecar Egress Interface"),
+    _("Interface used by this Xray sidecar to reach the proxy server. Leave empty for regular WAN. Does not change the rule's client routing."),
+  );
+  // Xray is the module-provided action supported by the matching backend
+  // egress hook. Its option can be registered synchronously: a hidden unused
+  // widget has no effect when the Xray module is not installed.
+  egress.depends("action", "xray");
+  egress.noaliases = true;
+  egress.nobridges = false;
+  egress.noinactive = false;
+  egress.rmempty = true;
+  egress.modalonly = true;
+  // Keep the native DeviceSelect load(): it populates the devices list before
+  // rendering, then delegates to the standard option loader and cfgvalue().
+  egress.cfgvalue = function (section_id) {
+    return uci.get(UCI_PACKAGE, section_id, "egress_interface") || "";
+  };
+  egress.write = function (section_id, value) {
+    if (value) {
+      uci.set(UCI_PACKAGE, section_id, "egress_interface", value);
+    } else {
+      uci.unset(UCI_PACKAGE, section_id, "egress_interface");
+    }
+  };
+}
+
 function ensureModuleConfigOptions(target) {
+  ensureSidecarEgressOption(target);
   getModuleConfigActions().forEach((moduleAction) => {
     buildModuleConfigOption(target, moduleAction);
   });
@@ -1853,12 +1896,7 @@ function validateNfqwsStrategyRemotely(value) {
             : [],
       });
     })
-    .catch((error) =>
-      cacheNfqwsRemoteValidation(
-        normalized,
-        buildNfqwsRemoteValidationFallback(error),
-      ),
-    )
+    .catch((error) => buildNfqwsRemoteValidationFallback(error))
     .finally(() => {
       nfqwsRemoteValidationInflight.delete(normalized);
     });
@@ -2309,12 +2347,7 @@ function validateByedpiStrategyRemotely(value) {
             : [],
       });
     })
-    .catch((error) =>
-      cacheByedpiRemoteValidation(
-        normalized,
-        buildByedpiRemoteValidationFallback(error),
-      ),
-    )
+    .catch((error) => buildByedpiRemoteValidationFallback(error))
     .finally(() => {
       byedpiRemoteValidationInflight.delete(normalized);
     });
@@ -4094,6 +4127,8 @@ function createSectionContent(section) {
 
 const EntryPoint = {
   createSectionContent,
+  getSectionIconValue,
+  renderSectionIconNode,
 };
 
 return baseclass.extend(EntryPoint);

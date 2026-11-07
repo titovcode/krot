@@ -5,6 +5,123 @@ PODKOP_CONFIG_NAME="${PODKOP_CONFIG_NAME:-krot}"
 PODKOP_DNSMASQ_SECTION="${PODKOP_DNSMASQ_SECTION:-krot}"
 SB_DNS_INBOUND_ADDRESS="${SB_DNS_INBOUND_ADDRESS:-127.0.0.42}"
 
+get_router_metrics() {
+    local temp_raw="" temp_c="null" zone value
+    local mem_total=0 mem_used=0 mem_percent=0
+    local uptime_seconds=0 line key val
+
+    for zone in /sys/class/thermal/thermal_zone*/temp; do
+        [ -r "$zone" ] || continue
+        read -r value < "$zone" 2>/dev/null || continue
+        case "$value" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        if [ -z "$temp_raw" ] || [ "$value" -gt "$temp_raw" ]; then
+            temp_raw="$value"
+        fi
+    done
+
+    [ -n "$temp_raw" ] && temp_c=$((temp_raw / 1000))
+
+    local mem_free=0
+    while read -r key val _; do
+        case "$key" in
+            MemTotal:)     mem_total="$val" ;;
+            MemFree:)      mem_free="$val" ;;
+        esac
+    done < /proc/meminfo 2>/dev/null
+    mem_total="${mem_total:-0}"
+    mem_free="${mem_free:-0}"
+
+    # Mirror the LuCI status page exactly so both screens agree:
+    # view/status/include/20_memory.js uses Used = total - free.
+    if [ "$mem_total" -gt 0 ] 2>/dev/null; then
+        mem_used=$((mem_total - mem_free))
+        [ "$mem_used" -lt 0 ] && mem_used=0
+        mem_percent=$((mem_used * 100 / mem_total))
+    fi
+
+    read -r uptime_seconds _ < /proc/uptime 2>/dev/null
+    uptime_seconds="${uptime_seconds%%.*}"
+    uptime_seconds="${uptime_seconds:-0}"
+
+    printf '{"temperature_c":%s,"mem_total_kb":%s,"mem_used_kb":%s,"mem_used_percent":%s,"uptime_seconds":%s}\n' \
+        "$temp_c" "$mem_total" "$mem_used" "$mem_percent" "$uptime_seconds"
+}
+get_wan_metrics() {
+    local device="" counters sample_time
+
+    device="$(ubus call network.interface.wan status 2>/dev/null |
+        jsonfilter -e '@.l3_device' 2>/dev/null)"
+    case "$device" in
+        '' | *[!A-Za-z0-9_.@-]*) return 1 ;;
+    esac
+
+    # Read the L3 WAN device only: summing its underlying Ethernet port and
+    # tunnel interfaces would count the same traffic more than once.
+    counters="$(awk -v device="$device" '$1 == device ":" { print $2, $10, $3, $11; exit }' /proc/net/dev 2>/dev/null)"
+    [ -n "$counters" ] || return 1
+    read -r sample_time _ < /proc/uptime 2>/dev/null
+
+    printf '{"interface":"%s","rx_bytes":%s,"tx_bytes":%s,"rx_packets":%s,"tx_packets":%s,"timestamp":%s}\n' \
+        "$device" $counters "$sample_time"
+}
+
+if [ "$PODKOP_COMMAND" = "get_wan_metrics" ]; then
+    get_wan_metrics
+    exit 0
+fi
+
+# Fast path for the LuCI header widget. LuCI polls this every 10s while the page
+# is open, and the command only reads /proc and /sys. Answering it before the 14
+# libraries are sourced and the remaining ~13.8k lines are parsed saves the
+# measured ~190ms parse cost (30x the real work) on every poll.
+if [ "$PODKOP_COMMAND" = "get_router_metrics" ]; then
+    get_router_metrics
+    exit 0
+fi
+
+# Minimal notice helper for the pre-lib fast path below. logging.sh redefines
+# nolog() once it is sourced, so only these early commands ever see this one.
+krot_fast_notice() {
+    [ -t 1 ] || return 0
+    printf '%s\n' "$1"
+}
+
+check_logs() {
+    if ! command -v logread > /dev/null 2>&1; then
+        krot_fast_notice "Error: logread command not found"
+        return 1
+    fi
+
+    local logs
+    logs=$(logread | grep -E "krot|sing-box")
+
+    if [ -z "$logs" ]; then
+        krot_fast_notice "Logs not found"
+        return 1
+    fi
+
+    # Find the last occurrence of "Starting K.R.O.T."
+    local start_line
+    start_line=$(echo "$logs" | grep -n "krot.*Starting K.R.O.T." | tail -n 1 | cut -d: -f1)
+
+    if [ -n "$start_line" ]; then
+        echo "$logs" | tail -n +"$start_line"
+    else
+        krot_fast_notice "No 'Starting K.R.O.T.' message found, showing last 100 lines"
+        echo "$logs" | tail -n 100
+    fi
+}
+# check_logs is polled every 3s by the log watcher while a LuCI page is open. Like
+# get_router_metrics it only shells out to logread/grep/tail, so serving it before
+# the libraries are sourced removes the ~200ms script-parse cost from the single
+# rpcd file.exec channel that page-load RPCs also queue on.
+if [ "$PODKOP_COMMAND" = "check_logs" ]; then
+    check_logs
+    exit 0
+fi
+
 podkop_dnsmasq_failsafe_restore_raw() {
     local podkop_interfaces default_servers backup_servers backup_notinterfaces value
     local default_has_podkop_dns noresolv cachesize changed
@@ -1645,6 +1762,46 @@ reload_state_is_compatible() {
     [ "$(read_reload_state_value "format")" = "$PODKOP_RELOAD_STATE_FORMAT" ]
 }
 
+# Read all reload-state keys in a single pass instead of one awk per key.
+# Populates RELOAD_PREV_* variables. Values may contain '=' and spaces.
+load_reload_state() {
+    local line key value
+    RELOAD_PREV_SERVICE_TRIGGER_SIGNATURE=""
+    RELOAD_PREV_DNSMASQ_SIGNATURE=""
+    RELOAD_PREV_SING_BOX_SIGNATURE=""
+    RELOAD_PREV_NFT_SIGNATURE=""
+    RELOAD_PREV_ZAPRET_QUEUE_SIGNATURE=""
+    RELOAD_PREV_ZAPRET_RUNTIME_SIGNATURE=""
+    RELOAD_PREV_BYEDPI_RUNTIME_SIGNATURE=""
+    RELOAD_PREV_LIST_SIGNATURE=""
+    RELOAD_PREV_CRON_SIGNATURE=""
+    RELOAD_PREV_URLTEST_ENABLED_SECTIONS=""
+    RELOAD_PREV_URLTEST_ENABLED_SECTIONS_KNOWN=0
+    RELOAD_PREV_DONT_TOUCH_DHCP=""
+
+    # No state yet (first start): keep the empty defaults initialized above.
+    [ -f "$PODKOP_RELOAD_STATE_FILE" ] || return 1
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        key="${line%%=*}"
+        value="${line#*=}"
+        case "$key" in
+            service_trigger_signature) RELOAD_PREV_SERVICE_TRIGGER_SIGNATURE="$value" ;;
+            restart_signature)         [ -z "$RELOAD_PREV_SERVICE_TRIGGER_SIGNATURE" ] && RELOAD_PREV_SERVICE_TRIGGER_SIGNATURE="$value" ;;
+            dnsmasq_signature)         RELOAD_PREV_DNSMASQ_SIGNATURE="$value" ;;
+            sing_box_signature)        RELOAD_PREV_SING_BOX_SIGNATURE="$value" ;;
+            nft_signature)             RELOAD_PREV_NFT_SIGNATURE="$value" ;;
+            zapret_queue_signature)    RELOAD_PREV_ZAPRET_QUEUE_SIGNATURE="$value" ;;
+            zapret_runtime_signature)  RELOAD_PREV_ZAPRET_RUNTIME_SIGNATURE="$value" ;;
+            byedpi_runtime_signature)  RELOAD_PREV_BYEDPI_RUNTIME_SIGNATURE="$value" ;;
+            list_signature)            RELOAD_PREV_LIST_SIGNATURE="$value" ;;
+            cron_signature)            RELOAD_PREV_CRON_SIGNATURE="$value" ;;
+            urltest_enabled_sections)  RELOAD_PREV_URLTEST_ENABLED_SECTIONS="$value"; RELOAD_PREV_URLTEST_ENABLED_SECTIONS_KNOWN=1 ;;
+            dont_touch_dhcp)           RELOAD_PREV_DONT_TOUCH_DHCP="$value" ;;
+        esac
+    done < "$PODKOP_RELOAD_STATE_FILE"
+}
+
 signature_begin() {
     RELOAD_SIGNATURE_TMPFILE="$(mktemp)"
 }
@@ -1707,10 +1864,87 @@ dnsmasq_server_is_domain_forward() {
     return 1
 }
 
+# Snapshot all @dnsmasq[0] options in ONE uci call instead of ~14 separate
+# uci_get forks. Populates DNSMASQ_SNAPSHOT_* variables.
+_dnsmasq_snapshot_load() {
+    local section line key value value_prev list_item
+
+    # Scalar options
+    for key in $(dnsmasq_inherited_default_options); do
+        eval "DNSMASQ_SNAPSHOT_$key=''"
+    done
+    # List options
+    for key in $(dnsmasq_inherited_default_list_options); do
+        eval "DNSMASQ_SNAPSHOT_$key=''"
+    done
+    DNSMASQ_SNAPSHOT_server=""
+
+    # Scoped output starts with the resolved section name, including for named
+    # sections, so one UCI call works for both named and anonymous dnsmasq sections.
+    while IFS= read -r line; do
+        if [ -z "$section" ]; then
+            case "$line" in
+            dhcp.*=dnsmasq)
+                section="${line#dhcp.}"
+                section="${section%%=*}"
+                ;;
+            esac
+            continue
+        fi
+
+        case "$line" in
+        dhcp."$section".*=*)
+            key="${line#dhcp."$section".}"
+            key="${key%%=*}"
+            value="${line#*=}"
+            case "$key" in
+            domain | local | expandhosts | localise_queries | domainneeded | \
+            add_local_domain | add_local_hostname | add_local_fqdn | \
+            rebind_protection | rebind_localhost)
+                value="${value#\'}"
+                value="${value%\'}"
+                eval "DNSMASQ_SNAPSHOT_$key=\"\$value\""
+                ;;
+            rebind_domain | server)
+                # UCI prints a complete list on one line as quoted values.
+                while [ -n "$value" ]; do
+                    case "$value" in
+                    \'*)
+                        list_item="${value#\'}"
+                        list_item="${list_item%%\'*}"
+                        value="${value#\'*\'}"
+                        value="${value# }"
+                        ;;
+                    *)
+                        list_item="$value"
+                        value=""
+                        ;;
+                    esac
+                    eval "value_prev=\"\$DNSMASQ_SNAPSHOT_$key\""
+                    if [ -n "$value_prev" ]; then
+                        value_prev="$value_prev $list_item"
+                    else
+                        value_prev="$list_item"
+                    fi
+                    eval "DNSMASQ_SNAPSHOT_$key=\"\$value_prev\""
+                done
+                ;;
+            esac
+            ;;
+        esac
+    done <<EOF
+$(uci show dhcp.@dnsmasq[0] 2>/dev/null)
+EOF
+}
+
 dnsmasq_default_domain_forward_servers() {
     local server
 
-    for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
+    # Called from dnsmasq configure/restore paths too, not only from
+    # build_dnsmasq_signature - make sure the snapshot exists.
+    _dnsmasq_snapshot_load
+
+    for server in $DNSMASQ_SNAPSHOT_server; do
         dnsmasq_server_is_domain_forward "$server" || continue
         printf '%s\n' "$server"
     done
@@ -1724,18 +1958,20 @@ append_dnsmasq_inherited_options_signature() {
     local option value
 
     for option in $(dnsmasq_inherited_default_options); do
-        value="$(uci_get "dhcp" "@dnsmasq[0]" "$option")"
+        eval "value=\"\$DNSMASQ_SNAPSHOT_$option\""
         signature_add "dhcp.@dnsmasq[0].$option" "$value"
     done
 
     for option in $(dnsmasq_inherited_default_list_options); do
-        value="$(uci_get "dhcp" "@dnsmasq[0]" "$option")"
+        eval "value=\"\$DNSMASQ_SNAPSHOT_$option\""
         signature_add "dhcp.@dnsmasq[0].$option" "$value"
     done
 }
 
 build_dnsmasq_signature() {
     local dont_touch_dhcp source_network_interfaces
+
+    _dnsmasq_snapshot_load
 
     signature_begin
     config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
@@ -1891,9 +2127,10 @@ append_unified_rule_signature() {
 
     rule_is_enabled "$section" || return 0
 
-    local action action_raw
+    local action action_raw default_action
     action="$(get_rule_action_primitive "$section")"
     config_get action_raw "$section" "action"
+    config_get_bool default_action "$section" "default_action" 0
 
     # Shared per-rule values: every helper below runs once per rule instead of
     # once per signature builder.
@@ -1920,15 +2157,21 @@ append_unified_rule_signature() {
     # ---- sing-box signature ----
     if [ -n "$action" ]; then
         sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.action" "$action"
+        sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.default_action" "$default_action"
 
         # A rule whose raw action carries a module-declared config field must also
         # fold that field into the signature: editing the pasted config has to
         # trigger a reload even though sing-box itself never sees the fragment.
-        local module_config_meta module_config_option module_config_value
+        local module_config_meta module_config_option module_config_value module_config_format egress_interface
         if module_config_meta="$(get_rule_module_config_meta "$section")"; then
             module_config_option="$(printf '%s' "$module_config_meta" | cut -f1)"
+            module_config_format="$(printf '%s' "$module_config_meta" | cut -f2)"
             config_get module_config_value "$section" "$module_config_option"
             sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.$module_config_option" "$module_config_value"
+            if [ "$module_config_format" = "xray" ]; then
+                config_get egress_interface "$section" "egress_interface"
+                sig_tmp_add "$SIG_TMP_SING_BOX" "rule.$section.egress_interface" "$egress_interface"
+            fi
         fi
 
         case "$action" in
@@ -2168,6 +2411,14 @@ build_section_signatures() {
     sig_tmp_add "$SIG_TMP_SING_BOX" "settings.output_network_interface" "$output_network_interface"
     sig_tmp_add "$SIG_TMP_SING_BOX" "settings.disable_quic" "$disable_quic"
     sig_tmp_add "$SIG_TMP_SING_BOX" "settings.routing_excluded_ips" "$routing_excluded_ips"
+    local hagezi_enabled hagezi_list list_update_enabled
+    config_get_bool hagezi_enabled "settings" "hagezi_enabled" 0
+    config_get hagezi_list "settings" "hagezi_list" "multi"
+    config_get_bool list_update_enabled "settings" "list_update_enabled" 1
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.hagezi_enabled" "$hagezi_enabled"
+    sig_tmp_add "$SIG_TMP_SING_BOX" "settings.hagezi_list" "$hagezi_list"
+    sig_tmp_add "$SIG_TMP_CRON" "settings.list_update_enabled" "$list_update_enabled"
+    sig_tmp_add "$SIG_TMP_CRON" "settings.hagezi_enabled" "$hagezi_enabled"
     if has_remote_sing_box_ruleset_sources; then
         sig_tmp_add "$SIG_TMP_SING_BOX" "settings.update_interval" "$update_interval"
     fi
@@ -2332,6 +2583,15 @@ has_remote_sing_box_ruleset_sources() {
     [ "$RELOAD_REMOTE_SING_BOX_RULESET_SOURCES_PRESENT" -eq 1 ]
 }
 
+hagezi_auto_update_enabled() {
+    local enabled list_updates_enabled
+
+    config_get_bool enabled "settings" "hagezi_enabled" 0
+    [ "$enabled" -eq 1 ] || return 1
+    config_get_bool list_updates_enabled "settings" "list_update_enabled" 1
+    [ "$list_updates_enabled" -eq 1 ]
+}
+
 get_settings_update_interval() {
     local enabled update_interval
 
@@ -2450,7 +2710,10 @@ build_new_urltest_enabled_sections() {
 }
 
 capture_reload_state() {
-    config_load "$PODKOP_CONFIG_NAME"
+    # config_load is intentionally NOT called here: every caller has already
+    # loaded the config (reload() at line 4104, commit_podkop_config at 3303,
+    # or explicit config_load before the call). A second load would re-parse
+    # the whole UCI package for nothing.
     RELOAD_STATE_SERVICE_TRIGGER_SIGNATURE="$(build_service_trigger_signature)"
     RELOAD_STATE_DNSMASQ_SIGNATURE="$(build_dnsmasq_signature)"
     build_section_signatures
@@ -2586,7 +2849,7 @@ refresh_list_update_cron() {
 
     remove_cron_job
 
-    if has_list_update_sources; then
+    if has_list_update_sources || hagezi_auto_update_enabled; then
         update_interval="$(get_settings_update_interval)"
         if [ -z "$update_interval" ]; then
             log "Remote list auto-update is disabled"
@@ -3151,6 +3414,16 @@ restart_module_config_services() {
         esac
 
         if [ -x "/etc/init.d/$service" ]; then
+            local service_dir
+            service_dir="$(module_config_options | awk -F '\t' -v service="$service" '$5 == service && $6 != "" { print $6; exit }')"
+            if [ -n "$service_dir" ] && [ ! -s "$service_dir/.krot-manifest" ] &&
+                ! find "$service_dir" -maxdepth 1 -type f -name '*.json' 2> /dev/null | grep -q .; then
+                log "Stopping '$service': no module configurations are active"
+                if ! "/etc/init.d/$service" stop > /dev/null 2>&1; then
+                    log "Failed to stop unused '$service'" "warn"
+                fi
+                continue
+            fi
             log "Restarting '$service' after module config changes"
             if ! "/etc/init.d/$service" restart > /dev/null 2>&1; then
                 log "Failed to restart '$service' after module config changes" "warn"
@@ -3721,37 +3994,79 @@ validate_extended_server_features() {
     config_foreach validate_extended_server_features_handler "server"
 }
 
+# Cache file for platform requirement checks (sing-box/base64 versions).
+# Keyed by binary mtime so an opkg upgrade invalidates it automatically.
+PODKOP_REQUIREMENTS_CACHE_FILE="$PODKOP_RUNTIME_STATE_DIR/requirements-cache"
+
+_requirements_cache_key() {
+    local sb_path b64_path sb_mtime b64_mtime
+    sb_path="$(command -v sing-box 2>/dev/null)" || return 1
+    b64_path="$(command -v base64 2>/dev/null)" || return 1
+    sb_mtime="$(stat -c '%Y' "$sb_path" 2>/dev/null || date -r "$sb_path" +%s 2>/dev/null || echo 0)"
+    b64_mtime="$(stat -c '%Y' "$b64_path" 2>/dev/null || date -r "$b64_path" +%s 2>/dev/null || echo 0)"
+    printf '%s:%s\n' "$sb_mtime" "$b64_mtime"
+}
+
+# On success also exports REQUIREMENTS_CACHED_SB_VERSION (second field of
+# the cache line) so config-dependent checks can still run against the
+# cached sing-box version.
+_requirements_cache_valid() {
+    [ -f "$PODKOP_REQUIREMENTS_CACHE_FILE" ] || return 1
+    local cached_key cached_version current_key
+    read -r cached_key cached_version < "$PODKOP_REQUIREMENTS_CACHE_FILE" 2>/dev/null
+    [ -n "$cached_key" ] || return 1
+    [ -n "$cached_version" ] || return 1
+    current_key="$(_requirements_cache_key)" || return 1
+    [ "$cached_key" = "$current_key" ] || return 1
+    REQUIREMENTS_CACHED_SB_VERSION="$cached_version"
+    return 0
+}
+
 check_requirements() {
     log "Check Requirements"
 
     local sing_box_version coreutils_base64_version
-    sing_box_version="$(sing-box version | head -n1 | awk '{print $NF}')"
-    coreutils_base64_version="$(base64 --version 2>/dev/null | awk 'NR == 1 {print $4}')"
 
-    if [ -z "$sing_box_version" ]; then
-        log "Package 'sing-box' is not installed. Aborted." "error"
-        return 1
+    if _requirements_cache_valid; then
+        sing_box_version="$REQUIREMENTS_CACHED_SB_VERSION"
+        log "Requirements check passed (cached)" "debug"
     else
-        if ! is_min_package_version "$sing_box_version" "$SB_REQUIRED_VERSION"; then
-            log "Package 'sing-box' version ($sing_box_version) is lower than the required minimum ($SB_REQUIRED_VERSION). Update sing-box: opkg update && opkg remove sing-box && opkg install sing-box. Aborted." "error"
+        sing_box_version="$(sing-box version | head -n1 | awk '{print $NF}')"
+        coreutils_base64_version="$(base64 --version 2>/dev/null | awk 'NR == 1 {print $4}')"
+
+        if [ -z "$sing_box_version" ]; then
+            log "Package 'sing-box' is not installed. Aborted." "error"
             return 1
+        else
+            if ! is_min_package_version "$sing_box_version" "$SB_REQUIRED_VERSION"; then
+                log "Package 'sing-box' version ($sing_box_version) is lower than the required minimum ($SB_REQUIRED_VERSION). Update sing-box: opkg update && opkg remove sing-box && opkg install sing-box. Aborted." "error"
+                return 1
+            fi
+
+            if ! service_exists "sing-box"; then
+                log "Service 'sing-box' is missing. Please install the official package to ensure the service is available. Aborted." "error"
+                return 1
+            fi
         fi
 
-        if ! service_exists "sing-box"; then
-            log "Service 'sing-box' is missing. Please install the official package to ensure the service is available. Aborted." "error"
+        if [ -z "$coreutils_base64_version" ]; then
+            log "Package 'coreutils-base64' is not installed. Aborted." "error"
             return 1
+        elif ! is_min_package_version "$coreutils_base64_version" "$COREUTILS_BASE64_REQUIRED_VERSION"; then
+            log "Package 'coreutils-base64' version ($coreutils_base64_version) is lower than the required minimum ($COREUTILS_BASE64_REQUIRED_VERSION). This may cause issues when decoding base64 streams with missing padding, as automatic padding support is not available in older versions." "warn"
         fi
 
-        validate_extended_server_features "$sing_box_version"
+        mkdir -p "$PODKOP_RUNTIME_STATE_DIR"
+        printf '%s %s\n' "$(_requirements_cache_key)" "$sing_box_version" > "$PODKOP_REQUIREMENTS_CACHE_FILE"
     fi
 
-    if [ -z "$coreutils_base64_version" ]; then
-        log "Package 'coreutils-base64' is not installed. Aborted." "error"
-        return 1
-    elif ! is_min_package_version "$coreutils_base64_version" "$COREUTILS_BASE64_REQUIRED_VERSION"; then
-        log "Package 'coreutils-base64' version ($coreutils_base64_version) is lower than the required minimum ($COREUTILS_BASE64_REQUIRED_VERSION). This may cause issues when decoding base64 streams with missing padding, as automatic padding support is not available in older versions." "warn"
-    fi
+    # validate_extended_server_features walks the CURRENT UCI server sections
+    # (mtproto/xhttp need sing-box-extended), so it must run on every call,
+    # not only when the platform cache expires.
+    validate_extended_server_features "$sing_box_version"
 
+    # Config-dependent checks must NOT be cached: they validate the current
+    # UCI config which changes between reloads.
     if grep -qE 'doh_backup_noresolv|doh_backup_server|doh_server' /etc/config/dhcp; then
         log "Detected https-dns-proxy in DHCP config. Edit /etc/config/dhcp" "error"
     fi
@@ -4124,25 +4439,19 @@ reload() {
         return "$status"
     fi
 
-    previous_service_trigger_signature="$(read_reload_state_value "service_trigger_signature")"
-    [ -n "$previous_service_trigger_signature" ] ||
-        previous_service_trigger_signature="$(read_reload_state_value "restart_signature")"
-    previous_dnsmasq_signature="$(read_reload_state_value "dnsmasq_signature")"
-    previous_sing_box_signature="$(read_reload_state_value "sing_box_signature")"
-    previous_nft_signature="$(read_reload_state_value "nft_signature")"
-    previous_zapret_queue_signature="$(read_reload_state_value "zapret_queue_signature")"
-    previous_zapret_runtime_signature="$(read_reload_state_value "zapret_runtime_signature")"
-    previous_byedpi_runtime_signature="$(read_reload_state_value "byedpi_runtime_signature")"
-    previous_list_signature="$(read_reload_state_value "list_signature")"
-    previous_cron_signature="$(read_reload_state_value "cron_signature")"
-    previous_urltest_enabled_sections_known=0
-    if reload_state_has_key "urltest_enabled_sections"; then
-        previous_urltest_enabled_sections_known=1
-        previous_urltest_enabled_sections="$(read_reload_state_value "urltest_enabled_sections")"
-    else
-        previous_urltest_enabled_sections=""
-    fi
-    previous_dont_touch_dhcp="$(read_reload_state_value "dont_touch_dhcp")"
+    load_reload_state
+    previous_service_trigger_signature="$RELOAD_PREV_SERVICE_TRIGGER_SIGNATURE"
+    previous_dnsmasq_signature="$RELOAD_PREV_DNSMASQ_SIGNATURE"
+    previous_sing_box_signature="$RELOAD_PREV_SING_BOX_SIGNATURE"
+    previous_nft_signature="$RELOAD_PREV_NFT_SIGNATURE"
+    previous_zapret_queue_signature="$RELOAD_PREV_ZAPRET_QUEUE_SIGNATURE"
+    previous_zapret_runtime_signature="$RELOAD_PREV_ZAPRET_RUNTIME_SIGNATURE"
+    previous_byedpi_runtime_signature="$RELOAD_PREV_BYEDPI_RUNTIME_SIGNATURE"
+    previous_list_signature="$RELOAD_PREV_LIST_SIGNATURE"
+    previous_cron_signature="$RELOAD_PREV_CRON_SIGNATURE"
+    previous_urltest_enabled_sections_known="$RELOAD_PREV_URLTEST_ENABLED_SECTIONS_KNOWN"
+    previous_urltest_enabled_sections="$RELOAD_PREV_URLTEST_ENABLED_SECTIONS"
+    previous_dont_touch_dhcp="$RELOAD_PREV_DONT_TOUCH_DHCP"
     capture_reload_state
     if [ "$previous_urltest_enabled_sections_known" -eq 1 ]; then
         PODKOP_URLTEST_NEW_ENABLED_SECTIONS="$(
@@ -4959,11 +5268,11 @@ get_rule_ports_commas_string() {
     printf '%s\n' "$result"
 }
 
-get_rule_port_values_json_array() {
-    local section="$1"
-    local ports item normalized result
-
-    ports="$(get_rule_ports_commas_string "$section")"
+# Build port JSON arrays from an already-computed comma string (avoids
+# re-parsing the UCI config a second time).
+_rule_port_values_from_commas() {
+    local ports="$1"
+    local item normalized result
 
     for item in $(printf '%s\n' "$ports" | tr ',' ' '); do
         case "$item" in
@@ -4977,11 +5286,9 @@ get_rule_port_values_json_array() {
     port_numbers_to_json_array "$result"
 }
 
-get_rule_port_ranges_json_array() {
-    local section="$1"
-    local ports item normalized result
-
-    ports="$(get_rule_ports_commas_string "$section")"
+_rule_port_ranges_from_commas() {
+    local ports="$1"
+    local item normalized result
 
     for item in $(printf '%s\n' "$ports" | tr ',' ' '); do
         case "$item" in
@@ -4994,6 +5301,16 @@ get_rule_port_ranges_json_array() {
     done
 
     comma_string_to_json_array "$result"
+}
+
+get_rule_port_values_json_array() {
+    local section="$1"
+    _rule_port_values_from_commas "$(get_rule_ports_commas_string "$section")"
+}
+
+get_rule_port_ranges_json_array() {
+    local section="$1"
+    _rule_port_ranges_from_commas "$(get_rule_ports_commas_string "$section")"
 }
 
 section_has_destination_matchers() {
@@ -5818,7 +6135,21 @@ list_update_if_due() {
         return 0
     fi
 
-    list_update
+    local result=0
+    list_update || result=$?
+
+    if hagezi_auto_update_enabled; then
+        if hagezi_update; then
+            # Local rule_sets do not download themselves; reload the active
+            # sing-box runtime so the newly compiled blocklist takes effect.
+            reload_sing_box_runtime || result=1
+        else
+            log "HaGeZi scheduled update failed, keeping the previous version" "warn"
+            result=1
+        fi
+    fi
+
+    return "$result"
 }
 
 # --- Sidecar (Xray) watchdog -------------------------------------------------
@@ -5955,23 +6286,11 @@ sidecar_watchdog() {
     config_foreach _sidecar_watchdog_handler "section"
 }
 
-build_sidecar_watchdog_cron_job() {
-    printf '*/2 * * * * %s sidecar_watchdog %s\n' "$PODKOP_BIN" "$PODKOP_SIDECAR_WATCHDOG_CRON_MARKER"
-}
-
 refresh_sidecar_watchdog_cron() {
-    local cron_job
-
-    remove_cron_job
-
-    if has_sidecar_rules; then
-        cron_job="$(build_sidecar_watchdog_cron_job)"
-        crontab -l 2> /dev/null | {
-            cat
-            echo "$cron_job"
-        } | crontab -
-        log "The cron job has been created: $cron_job"
-    fi
+    # The watchdog is managed by procd. Only clean up its legacy cron entry;
+    # remove_cron_job would also erase list and subscription schedules.
+    (crontab -l 2>/dev/null |
+        grep -Fv "$PODKOP_SIDECAR_WATCHDOG_CRON_MARKER") | crontab -
 }
 
 _has_sidecar_rule_handler() {
@@ -8803,11 +9122,22 @@ proxy_group_add_manual_link() {
     local outbound_tag display_name server
 
     PROXY_GROUP_MANUAL_INDEX=$((PROXY_GROUP_MANUAL_INDEX + 1))
-    config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$PROXY_GROUP_MANUAL_INDEX" "$link" "$udp_over_tcp")"
+    # The facade prints the server address to stderr and the updated config
+    # to stdout. Capture both without re-parsing the config JSON.
+    config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$PROXY_GROUP_MANUAL_INDEX" "$link" "$udp_over_tcp" 2>/tmp/.krot-cf-server.$$)"
+    server="$(cat /tmp/.krot-cf-server.$$ 2>/dev/null)"
+    rm -f /tmp/.krot-cf-server.$$
     outbound_tag="$(get_outbound_tag_by_section "$section-$PROXY_GROUP_MANUAL_INDEX")"
     display_name="$(subscription_url_get_fragment "$link")"
-    [ -n "$display_name" ] || display_name="$outbound_tag"
-    server="$(printf '%s' "$config" | json_utils_ucode outbound-server-by-tag "$outbound_tag" 2>/dev/null)"
+    # If no fragment in URL, derive a human-readable name from the server address
+    # instead of showing the raw internal tag like "tunel-1-out".
+    if [ -z "$display_name" ]; then
+        if [ -n "$server" ]; then
+            display_name="$server"
+        else
+            display_name="$outbound_tag"
+        fi
+    fi
     proxy_group_append_outbound "$outbound_tag" "$link" "$display_name" "$server"
 }
 
@@ -8977,7 +9307,15 @@ configure_outbound_handler() {
         PROXY_GROUP_COUNTRIES_JSON="{}"
         PROXY_GROUP_DETECT_COUNTRIES="$detect_server_country"
 
+        # Batch all manual-link outbound additions into ONE ucode process.
+        # The facade reports the server address on stderr (captured to a
+        # temp file by proxy_group_add_manual_link) instead of the caller
+        # re-parsing $config, so the stale-config limitation of batch mode
+        # does not apply here.
+        sing_box_cm_batch_begin
         config_list_foreach "$section" "selector_proxy_links" proxy_group_add_manual_link "$section" "$udp_over_tcp"
+        sing_box_cm_batch_flush "$config"
+        config="$SB_CM_BATCH_RESULT"
 
         metadata_tmpfile=""
         if [ "$has_subscription_sources" -eq 1 ]; then
@@ -9255,26 +9593,242 @@ configure_hagezi_dns_blocklist() {
     log "HaGeZi: added $domain_count domains to DNS blocklist" "info"
 }
 
+HAGEZI_DIR="/etc/krot/hagezi"
+HAGEZI_BASE_URL="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock"
+# Keep in sync with the hagezi_list options in the LuCI DNS settings.
+HAGEZI_LISTS="light multi pro pro.plus ultimate pro.mini pro.plus.mini ultimate.mini tif.mini tif.medium"
+
+hagezi_list_is_supported() {
+    case " $HAGEZI_LISTS " in
+    *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+_hagezi_http_download() {
+    local url="$1" output="$2"
+    local via_proxy proxy_addr
+
+    config_get_bool via_proxy "settings" "download_lists_via_proxy" 0
+    proxy_addr=""
+    [ "$via_proxy" -eq 1 ] && proxy_addr="http://127.0.0.1:4534"
+
+    if [ -n "$proxy_addr" ] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 10 --max-time 300 -x "$proxy_addr" "$url" -o "$output"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$output"
+    elif [ -n "$proxy_addr" ] && command -v wget >/dev/null 2>&1; then
+        http_proxy="$proxy_addr" https_proxy="$proxy_addr" wget -qO "$output" --timeout=300 "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$output" --timeout=300 "$url"
+    else
+        return 1
+    fi
+}
+
+# Generate a sing-box source rule-set JSON from an AdBlock-style list (||domain^).
+_hagezi_generate_ruleset() {
+    local input="$1" output="$2"
+    local tmp_output="$output.tmp"
+
+    echo '{"version":3,"rules":[{"domain_suffix":[' > "$tmp_output"
+    grep '^||' "$input" 2>/dev/null |
+        sed 's/^||//; s/\^.*//' |
+        sort -u |
+        awk 'BEGIN{first=1} {if(!first) printf ","; printf "\"%s\"", $0; first=0}' >> "$tmp_output"
+    echo ']}]}' >> "$tmp_output"
+
+    if [ -s "$tmp_output" ]; then
+        mv "$tmp_output" "$output"
+    else
+        rm -f "$tmp_output"
+        return 1
+    fi
+}
+
+# Download the configured HaGeZi blocklist and compile it into the sing-box
+# rule_set consumed by configure_hagezi_dns_blocklist_v2. Safe to run during
+# a reload: metadata commits go through commit_podkop_config, which marks the
+# change as internal so it does not schedule another reload.
+hagezi_update() {
+    local list url list_file tmp_file domain_count
+
+    # The blocklists are built in; create their data directory on first use.
+    mkdir -p "$HAGEZI_DIR" || {
+        log "Failed to create HaGeZi data directory: $HAGEZI_DIR" "error"
+        return 1
+    }
+
+    # Standalone CLI invocations need the config; reload-time calls already
+    # have it loaded.
+    [ "$PODKOP_COMMAND" = "hagezi_update" ] && config_load "$PODKOP_CONFIG_NAME"
+
+    config_get list "settings" "hagezi_list" "multi"
+    hagezi_list_is_supported "$list" || {
+        log "Unsupported HaGeZi list '$list', falling back to 'multi'" "warn"
+        list="multi"
+    }
+
+    url="$HAGEZI_BASE_URL/$list.txt"
+    list_file="$HAGEZI_DIR/$list.txt"
+    tmp_file="$list_file.new"
+
+    log "Downloading HaGeZi blocklist '$list'..." "info"
+    if ! _hagezi_http_download "$url" "$tmp_file" || [ ! -s "$tmp_file" ]; then
+        rm -f "$tmp_file"
+        log "Failed to download HaGeZi blocklist from $url. GitHub may be blocked: enable 'Download lists via Proxy/VPN' in K.R.O.T. Settings." "error"
+        return 1
+    fi
+
+    domain_count="$(grep -c '^||' "$tmp_file" 2>/dev/null)"
+    [ -n "$domain_count" ] || domain_count=0
+    if [ "$domain_count" -eq 0 ]; then
+        rm -f "$tmp_file"
+        log "Downloaded HaGeZi blocklist contains no domains" "error"
+        return 1
+    fi
+
+    mv "$tmp_file" "$list_file"
+    ln -sf "$list_file" "$HAGEZI_DIR/current.txt"
+
+    # Remove stale blocklists from previous list selections to free flash space.
+    # Only keep the current list file, ruleset files, metadata and the symlink.
+    local stale_file
+    for stale_file in "$HAGEZI_DIR"/*.txt; do
+        [ -f "$stale_file" ] || continue
+        [ -L "$stale_file" ] && continue
+        [ "$stale_file" = "$list_file" ] && continue
+        rm -f "$stale_file"
+        log "Removed stale HaGeZi blocklist: $(basename "$stale_file")" "info"
+    done
+
+    log "Generating sing-box rule_set ($domain_count domains)..." "info"
+    if ! _hagezi_generate_ruleset "$list_file" "$HAGEZI_DIR/ruleset.json"; then
+        log "Failed to generate HaGeZi rule_set" "error"
+        return 1
+    fi
+
+    if sing-box rule-set compile "$HAGEZI_DIR/ruleset.json" -o "$HAGEZI_DIR/ruleset.srs.tmp" 2>/dev/null; then
+        mv "$HAGEZI_DIR/ruleset.srs.tmp" "$HAGEZI_DIR/ruleset.srs"
+        rm -f "$HAGEZI_DIR/ruleset.json"
+        log "Compiled HaGeZi rule_set: $(wc -c < "$HAGEZI_DIR/ruleset.srs") bytes" "info"
+    else
+        rm -f "$HAGEZI_DIR/ruleset.srs.tmp"
+        # configure_hagezi_dns_blocklist_v2 falls back to the JSON source format.
+        log "sing-box rule-set compile failed, keeping JSON source format" "warn"
+    fi
+
+    printf '%s\n' "$list" > "$HAGEZI_DIR/current_list"
+    echo "1.1.0" > "$HAGEZI_DIR/version"
+
+    uci_set "$PODKOP_CONFIG_NAME" "settings" "hagezi_domains_count" "$domain_count"
+    uci_set "$PODKOP_CONFIG_NAME" "settings" "hagezi_last_update" "$(date '+%Y-%m-%d %H:%M')"
+    commit_podkop_config
+
+    log "HaGeZi blocklist '$list' updated: $domain_count domains" "info"
+    return 0
+}
+
+HAGEZI_UPDATE_STATE_FILE="$PODKOP_RUNTIME_STATE_DIR/hagezi-update.json"
+HAGEZI_UPDATE_PID_FILE="$PODKOP_RUNTIME_STATE_DIR/hagezi-update.pid"
+
+hagezi_update_is_running() {
+    local pid
+    pid="$(cat "$HAGEZI_UPDATE_PID_FILE" 2>/dev/null)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Background variant for the LuCI button: a synchronous exec would be killed
+# by the HTTP/ubus request timeout mid-download, so the job is detached and
+# polled via hagezi_update_status instead.
+hagezi_update_async() {
+    ensure_runtime_dirs
+
+    if hagezi_update_is_running; then
+        printf '{"status":"running","exit_code":null}\n'
+        return 0
+    fi
+
+    printf '{"status":"running","exit_code":null}\n' > "$HAGEZI_UPDATE_STATE_FILE"
+    (
+        trap '' HUP
+        # $$ in a background subshell is the parent PID; record the real one.
+        sh -c 'echo $PPID' > "$HAGEZI_UPDATE_PID_FILE" 2>/dev/null
+        if krot hagezi_update >/dev/null 2>&1; then
+            rc=0
+        else
+            rc=$?
+        fi
+        if [ "$rc" -eq 0 ]; then
+            printf '{"status":"done","exit_code":0}\n' > "$HAGEZI_UPDATE_STATE_FILE.tmp"
+        else
+            printf '{"status":"failed","exit_code":%s}\n' "$rc" > "$HAGEZI_UPDATE_STATE_FILE.tmp"
+        fi
+        mv "$HAGEZI_UPDATE_STATE_FILE.tmp" "$HAGEZI_UPDATE_STATE_FILE"
+        rm -f "$HAGEZI_UPDATE_PID_FILE"
+    ) >/dev/null 2>&1 &
+
+    printf '{"status":"started","exit_code":null}\n'
+}
+
+hagezi_update_status() {
+    local state=""
+
+    hagezi_update_is_running && state="running"
+
+    if [ -z "$state" ] && [ -f "$HAGEZI_UPDATE_STATE_FILE" ]; then
+        state="$(sed -n 's/.*"status":"\([a-z]*\)".*/\1/p' "$HAGEZI_UPDATE_STATE_FILE" | head -1)"
+        # Worker died without writing its final state (reboot, OOM, ...).
+        [ "$state" = "running" ] && state="failed"
+    fi
+    [ -n "$state" ] || state="idle"
+
+    case "$state" in
+    done | failed)
+        cat "$HAGEZI_UPDATE_STATE_FILE"
+        ;;
+    *)
+        printf '{"status":"%s","exit_code":null}\n' "$state"
+        ;;
+    esac
+}
+
 # Add HaGeZi DNS blocklist via sing-box rule_set (fast, efficient)
 # Uses pre-generated /etc/krot/hagezi/ruleset.srs (binary format for fast loading)
 configure_hagezi_dns_blocklist_v2() {
-    local enabled ruleset_file
+    local enabled ruleset_file ruleset_format configured_list current_list
 
     config_get_bool enabled "settings" "hagezi_enabled" 0
     [ "$enabled" -eq 1 ] || return 0
 
-    ruleset_file="/etc/krot/hagezi/ruleset.srs"
-    [ -s "$ruleset_file" ] || {
-        log "HaGeZi ad blocking is enabled but rule_set not found at $ruleset_file. Reinstall the HaGeZi module via Hub." "warn"
-        return 0
-    }
+    # Download on demand when the configured list was never fetched or the
+    # user just switched to another list: the rule_set must match the UCI
+    # choice before this very reload wires it into the DNS rules.
+    config_get configured_list "settings" "hagezi_list" "multi"
+    current_list="$(cat "$HAGEZI_DIR/current_list" 2>/dev/null)"
+    if [ "$current_list" != "$configured_list" ] ||
+        { [ ! -s "$HAGEZI_DIR/ruleset.srs" ] && [ ! -s "$HAGEZI_DIR/ruleset.json" ]; }; then
+        log "HaGeZi blocklist '$configured_list' is not downloaded yet (current: '${current_list:-none}'), fetching it now..." "info"
+        hagezi_update || log "HaGeZi blocklist download failed, keeping the previous version" "warn"
+    fi
 
-    # Add local rule_set reference (binary format for fast loading)
-    config=$(sing_box_cm_add_local_ruleset "$config" "hagezi-blocklist" "binary" "$ruleset_file")
-    
+    if [ -s "$HAGEZI_DIR/ruleset.srs" ]; then
+        ruleset_file="$HAGEZI_DIR/ruleset.srs"
+        ruleset_format="binary"
+    elif [ -s "$HAGEZI_DIR/ruleset.json" ]; then
+        ruleset_file="$HAGEZI_DIR/ruleset.json"
+        ruleset_format="source"
+    else
+        log "HaGeZi ad blocking is enabled but no rule_set is available in $HAGEZI_DIR. Check the blocklist download and update it in DNS settings." "warn"
+        return 0
+    fi
+
+    # Add local rule_set reference
+    config=$(sing_box_cm_add_local_ruleset "$config" "hagezi-blocklist" "$ruleset_format" "$ruleset_file")
+
     # Add DNS reject rule using the rule_set (string format, same as other rules)
     config=$(sing_box_cm_add_dns_reject_rule "$config" "rule_set" '"hagezi-blocklist"')
-    
+
     log "HaGeZi: using DNS blocklist from $ruleset_file" "info"
 }
 
@@ -9298,25 +9852,68 @@ configure_tailscale_server_dns_bypass_handler() {
     config=$(sing_box_cm_patch_dns_route_rule "$config" "$rule_tag" "inbound" "\"$inbound_tag\"")
 }
 
+# Echoes the outbound tag of the first enabled section with default_action=1
+# (the "route everything else here" rule), or an empty string when none exists.
+# The section keeps its regular route rule too; final only catches traffic that
+# matched no explicit rule, so domain/list rules still win over the default.
+get_default_action_outbound_tag() {
+    local section primitive default_action
+
+    for section in $(uci -q show "$PODKOP_CONFIG_NAME" 2>/dev/null | sed -n "s/^${PODKOP_CONFIG_NAME}\.\([^.]*\)=section\$/\1/p"); do
+        config_get default_action "$section" "default_action" "0"
+        [ "$default_action" = "1" ] || continue
+        rule_is_enabled "$section" || continue
+        primitive="$(get_rule_action_primitive "$section")"
+        case "$primitive" in
+        proxy | outbound | vpn | byedpi | zapret | direct)
+            get_outbound_tag_by_section "$section"
+            return 0
+            ;;
+        esac
+    done
+
+    return 1
+}
+
 sing_box_configure_route() {
     log "Configure the route section of a sing-box JSON configuration"
 
-    local output_network_interface outbound_mark
+    local output_network_interface outbound_mark final_outbound
     sing_box_cm_batch_begin
     outbound_mark="$((NFT_OUTBOUND_MARK))"
+
+    # Route everything that matched no explicit rule through the section marked
+    # default_action=1 (e.g. the AmneziaWG 'main' rule). Falls back to the first
+    # enabled proxy/vpn outbound so traffic outside domain-lists goes through VPN,
+    # not direct. Only falls back to direct when no proxy outbounds exist at all.
+    final_outbound="$(get_default_action_outbound_tag)"
+    if [ -n "$final_outbound" ]; then
+        log "Route final outbound: $final_outbound (default_action section)"
+    else
+        local fallback_section
+        fallback_section="$(get_first_outbound_section)"
+        if [ -n "$fallback_section" ]; then
+            final_outbound="$(get_outbound_tag_by_section "$fallback_section")"
+            log "Route final outbound: $final_outbound (first proxy section, no default_action set)"
+        else
+            final_outbound="$SB_DIRECT_OUTBOUND_TAG"
+            log "Route final outbound: $final_outbound (no proxy sections, fallback to direct)" "warn"
+        fi
+    fi
+
     config_get output_network_interface "settings" "output_network_interface"
     if [ -z "$output_network_interface" ]; then
         if mwan3_is_active; then
             log "mwan3 is active; disabling sing-box auto_detect_interface so mwan3 can control egress routing" "warn"
-            config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" "" "$outbound_mark")
+            config=$(sing_box_cm_configure_route "$config" "$final_outbound" false "$SB_DNS_SERVER_TAG" "" "$outbound_mark")
         else
-            config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG" "" "$outbound_mark")
+            config=$(sing_box_cm_configure_route "$config" "$final_outbound" true "$SB_DNS_SERVER_TAG" "" "$outbound_mark")
         fi
     else
         if mwan3_is_active; then
             log "mwan3 is active and Output Network Interface is set to '$output_network_interface'; sing-box egress is pinned to this interface" "warn"
         fi
-        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
+        config=$(sing_box_cm_configure_route "$config" "$final_outbound" false "$SB_DNS_SERVER_TAG" \
             "$output_network_interface" "$outbound_mark")
     fi
 
@@ -9773,7 +10370,36 @@ configure_route_rule_handler() {
 
     log "Configuring route rule '$section' with action '$action'"
 
-    if ! rule_has_primary_matchers "$section"; then
+    # Compute all condition comma-strings ONCE, then reuse for both the
+    # primary-matchers check and JSON conversion. This replaces the old
+    # rule_has_primary_matchers + 8 separate get_rule_condition_* calls.
+    local cond_domain cond_domain_suffix cond_domain_keyword cond_domain_regex
+    local cond_ip_cidr cond_source_ip_cidr cond_ports
+    local community_lists rule_set rule_set_with_subnets domain_ip_lists
+
+    cond_domain="$(get_rule_condition_commas_string "$section" "domain" "domains")"
+    cond_domain_suffix="$(get_rule_condition_commas_string "$section" "domain_suffix" "domains")"
+    cond_domain_keyword="$(get_rule_condition_commas_string "$section" "domain_keyword" "generic")"
+    cond_domain_regex="$(get_rule_condition_commas_string "$section" "domain_regex" "generic")"
+    cond_ip_cidr="$(get_rule_condition_commas_string "$section" "ip_cidr" "subnets")"
+    cond_source_ip_cidr="$(get_rule_condition_commas_string "$section" "source_ip_cidr" "subnets")"
+    cond_ports="$(get_rule_ports_commas_string "$section")"
+    config_get community_lists "$section" "community_lists"
+    config_get rule_set "$section" "rule_set"
+    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
+    config_get domain_ip_lists "$section" "domain_ip_lists"
+
+    if [ -z "$cond_domain" ] &&
+        [ -z "$cond_domain_suffix" ] &&
+        [ -z "$cond_domain_keyword" ] &&
+        [ -z "$cond_domain_regex" ] &&
+        [ -z "$cond_ip_cidr" ] &&
+        [ -z "$cond_source_ip_cidr" ] &&
+        [ -z "$cond_ports" ] &&
+        [ -z "$community_lists" ] &&
+        [ -z "$rule_set" ] &&
+        [ -z "$rule_set_with_subnets" ] &&
+        [ -z "$domain_ip_lists" ]; then
         log "Rule '$section' has no matchers and action '$action', skipping route creation" "warn"
         return 0
     fi
@@ -9783,39 +10409,39 @@ configure_route_rule_handler() {
     create_route_rule_for_action "$section" "$action" "$route_rule_tag"
 
     local domain_json domain_suffix_json domain_keyword_json domain_regex_json
-    domain_json="$(get_rule_condition_json_array "$section" "domain" "domains")"
+    domain_json="$(comma_string_to_json_array "$cond_domain")"
     [ "$domain_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "domain" "$domain_json") && \
         ensure_fakeip_dns_route_rule "$SB_FAKEIP_DNS_RULE_TAG" && \
         config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "domain" "$domain_json")
 
-    domain_suffix_json="$(get_rule_condition_json_array "$section" "domain_suffix" "domains")"
+    domain_suffix_json="$(comma_string_to_json_array "$cond_domain_suffix")"
     [ "$domain_suffix_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "domain_suffix" "$domain_suffix_json") && \
         ensure_fakeip_dns_route_rule "$SB_FAKEIP_DNS_RULE_TAG" && \
         config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "domain_suffix" "$domain_suffix_json")
 
-    domain_keyword_json="$(get_rule_condition_json_array "$section" "domain_keyword" "generic")"
+    domain_keyword_json="$(comma_string_to_json_array "$cond_domain_keyword")"
     [ "$domain_keyword_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "domain_keyword" "$domain_keyword_json") && \
         ensure_fakeip_dns_route_rule "$SB_FAKEIP_DNS_RULE_TAG" && \
         config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "domain_keyword" "$domain_keyword_json")
 
-    domain_regex_json="$(get_rule_condition_json_array "$section" "domain_regex" "generic")"
+    domain_regex_json="$(comma_string_to_json_array "$cond_domain_regex")"
     [ "$domain_regex_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "domain_regex" "$domain_regex_json") && \
         ensure_fakeip_dns_route_rule "$SB_FAKEIP_DNS_RULE_TAG" && \
         config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "domain_regex" "$domain_regex_json")
 
-    ip_values_json="$(get_rule_condition_json_array "$section" "ip_cidr" "subnets")"
+    ip_values_json="$(comma_string_to_json_array "$cond_ip_cidr")"
     if [ "$ip_values_json" != "[]" ]; then
         config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "ip_cidr" "$ip_values_json")
         if [ "$PODKOP_NFT_POPULATE_ENABLED" = "1" ]; then
-            ip_values="$(get_rule_condition_commas_string "$section" "ip_cidr" "subnets")"
+            ip_values="$cond_ip_cidr"
             add_section_ip_cidr_to_nft_sets "$section" "$ip_values"
         fi
     fi
 
-    port_values_json="$(get_rule_port_values_json_array "$section")"
+    port_values_json="$(_rule_port_values_from_commas "$cond_ports")"
     [ "$port_values_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "port" "$port_values_json")
 
-    port_ranges_json="$(get_rule_port_ranges_json_array "$section")"
+    port_ranges_json="$(_rule_port_ranges_from_commas "$cond_ports")"
     [ "$port_ranges_json" != "[]" ] && config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "port_range" "$port_ranges_json")
 
     if [ "$PODKOP_NFT_POPULATE_ENABLED" = "1" ]; then
@@ -9823,18 +10449,15 @@ configure_route_rule_handler() {
     fi
 
     local source_ip_values_json
-    source_ip_values_json="$(get_rule_condition_json_array "$section" "source_ip_cidr" "subnets")"
+    source_ip_values_json="$(comma_string_to_json_array "$cond_source_ip_cidr")"
     if [ "$source_ip_values_json" != "[]" ]; then
         config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "source_ip_cidr" "$source_ip_values_json")
         if [ "$PODKOP_NFT_POPULATE_ENABLED" = "1" ]; then
-            source_ip_values="$(get_rule_condition_commas_string "$section" "source_ip_cidr" "subnets")"
+            source_ip_values="$cond_source_ip_cidr"
             populate_source_ips_nft_from_values "$source_ip_values"
         fi
     fi
 
-    local domain_ip_lists rule_set_with_subnets
-    config_get domain_ip_lists "$section" "domain_ip_lists"
-    config_get rule_set_with_subnets "$section" "rule_set_with_subnets"
     config_list_foreach "$section" "community_lists" configure_community_list_handler "$section" "$route_rule_tag"
     config_list_foreach "$section" "rule_set" configure_rule_set_reference_handler "$route_rule_tag"
     config_list_foreach "$section" "rule_set_with_subnets" configure_rule_set_reference_handler "$route_rule_tag"
@@ -10136,14 +10759,13 @@ sing_box_save_config() {
     log "Save sing-box temporary config to $temp_file_path" "debug"
     sing_box_cm_save_config_to_file "$config" "$temp_file_path"
 
-    sing_box_config_check "$temp_file_path"
-
     current_config_hash=$(md5sum "$sing_box_config_path" 2> /dev/null | awk '{print $1}')
     temp_config_hash=$(md5sum "$temp_file_path" | awk '{print $1}')
     log "Current sing-box config hash: $current_config_hash" "debug"
     log "Temporary sing-box config hash: $temp_config_hash" "debug"
     if [ "$current_config_hash" != "$temp_config_hash" ]; then
         log "sing-box configuration has changed and will be updated"
+        sing_box_config_check "$temp_file_path"
         mv "$temp_file_path" "$sing_box_config_path"
     else
         log "sing-box configuration is unchanged"
@@ -11209,31 +11831,7 @@ check_nft() {
     nolog "NFT check completed"
 }
 
-check_logs() {
-    if ! command -v logread > /dev/null 2>&1; then
-        nolog "Error: logread command not found"
-        return 1
-    fi
 
-    local logs
-    logs=$(logread | grep -E "krot|sing-box")
-
-    if [ -z "$logs" ]; then
-        nolog "Logs not found"
-        return 1
-    fi
-
-    # Find the last occurrence of "Starting K.R.O.T."
-    local start_line
-    start_line=$(echo "$logs" | grep -n "krot.*Starting K.R.O.T." | tail -n 1 | cut -d: -f1)
-
-    if [ -n "$start_line" ]; then
-        echo "$logs" | tail -n +"$start_line"
-    else
-        nolog "No 'Starting K.R.O.T.' message found, showing last 100 lines"
-        echo "$logs" | tail -n 100
-    fi
-}
 
 check_sing_box_logs() {
     if ! command -v logread > /dev/null 2>&1; then
@@ -11592,7 +12190,7 @@ write_system_info_cache() {
 }
 
 build_system_info() {
-    local podkop_version podkop_latest_version luci_app_version sing_box_version sing_box_extended zapret_version zapret_installed byedpi_version byedpi_installed adguard_version adguard_installed hagezi_version hagezi_installed openwrt_version device_model
+    local podkop_version podkop_latest_version luci_app_version sing_box_version sing_box_extended zapret_version zapret_installed byedpi_version byedpi_installed adguard_version adguard_installed openwrt_version device_model
     local generated_at
 
     podkop_version="$PODKOP_VERSION"
@@ -11650,15 +12248,6 @@ build_system_info() {
         adguard_version="not installed"
     fi
 
-    hagezi_installed=0
-    if is_hagezi_installed; then
-        hagezi_installed=1
-        hagezi_version="$(cat /etc/krot/hagezi/version 2>/dev/null)"
-        [ -z "$hagezi_version" ] && hagezi_version="installed"
-    else
-        hagezi_version="not installed"
-    fi
-
     if [ -f /etc/os-release ]; then
         openwrt_version=$(grep OPENWRT_RELEASE /etc/os-release | cut -d'"' -f2)
         [ -z "$openwrt_version" ] && openwrt_version="unknown"
@@ -11684,7 +12273,6 @@ build_system_info() {
         "$zapret_version" "$zapret_installed" \
         "$byedpi_version" "$byedpi_installed" \
         "$adguard_version" "$adguard_installed" \
-        "$hagezi_version" "$hagezi_installed" \
         "$openwrt_version" "$device_model" "$generated_at"
 }
 
@@ -11772,6 +12360,10 @@ get_sing_box_status() {
 
     echo "{\"running\":$running,\"enabled\":$enabled,\"status\":\"$status\",\"dns_configured\":$dns_configured}"
 }
+
+# Prints router hardware metrics as JSON for the Dashboard "Router" widget.
+# temperature_c is null when the platform exposes no thermal zones.
+
 
 get_status() {
     local running=0
@@ -12019,55 +12611,93 @@ check_dns_available() {
         dns_upstream_label="AdGuard Home"
     fi
 
+    # These checks are independent. Waiting for every DNS timeout serially can
+    # exceed the 20-second LuCI RPC deadline before a result can be returned.
+    local dns_check_pid router_dns_pid bootstrap_check_pid
+    local bootstrap_result_file="/tmp/krot-bootstrap-dns.$$"
+    rm -f "$bootstrap_result_file"
+
     if [ "$dns_type" = "doh" ]; then
-        if [ -n "$dig_port" ]; then
-            dig @"$dig_host" -p "$dig_port" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        else
-            dig @"$dig_host" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        fi
+        (
+            if [ -n "$dig_port" ]; then
+                dig @"$dig_host" -p "$dig_port" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1
+            else
+                dig @"$dig_host" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1
+            fi
+        ) &
+        dns_check_pid=$!
     elif [ "$dns_type" = "dot" ]; then
-        if [ -n "$dig_port" ]; then
-            dig @"$dig_host" -p "$dig_port" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        else
-            dig @"$dig_host" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        fi
+        (
+            if [ -n "$dig_port" ]; then
+                dig @"$dig_host" -p "$dig_port" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1
+            else
+                dig @"$dig_host" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1
+            fi
+        ) &
+        dns_check_pid=$!
     elif [ "$dns_type" = "udp" ]; then
-        if [ -n "$dig_port" ]; then
-            dig @"$dig_host" -p "$dig_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        else
-            dig @"$dig_host" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && dns_status=1
-        fi
+        (
+            if [ -n "$dig_port" ]; then
+                dig @"$dig_host" -p "$dig_port" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1
+            else
+                dig @"$dig_host" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1
+            fi
+        ) &
+        dns_check_pid=$!
     fi
 
-    # Check if local DNS resolver is working
-    if dig @127.0.0.1 "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
+    ( dig @127.0.0.1 "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 ) &
+    router_dns_pid=$!
+
+    if [ -n "$bootstrap_dns_server" ]; then
+        (
+            local bs_host bs_port fallback_dns
+            bs_host="$(url_get_host "$bootstrap_dns_server")"
+            bs_port="$(url_get_port "$bootstrap_dns_server")"
+
+            if [ -n "$bs_port" ]; then
+                dig @"$bs_host" -p "$bs_port" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && {
+                    printf 'primary\n' > "$bootstrap_result_file"
+                    return 0
+                }
+            else
+                dig @"$bs_host" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && {
+                    printf 'primary\n' > "$bootstrap_result_file"
+                    return 0
+                }
+            fi
+
+            # Try fallbacks concurrently, but retain the original preference.
+            for fallback_dns in 8.8.8.8 9.9.9.9 1.1.1.1; do
+                ( dig @"$fallback_dns" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 &&
+                    printf '%s\n' "$fallback_dns" >> "$bootstrap_result_file" ) &
+            done
+            wait
+            return 0
+        ) &
+        bootstrap_check_pid=$!
+    fi
+
+    if [ -n "$dns_check_pid" ]; then
+        wait "$dns_check_pid" && dns_status=1
+    fi
+    if wait "$router_dns_pid"; then
         dns_on_router=1
     fi
-
-    # Check bootstrap DNS server (try multiple times with fallback servers)
-    if [ -n "$bootstrap_dns_server" ]; then
-        local bs_host bs_port
-        bs_host="$(url_get_host "$bootstrap_dns_server")"
-        bs_port="$(url_get_port "$bootstrap_dns_server")"
-        
-        # Try primary bootstrap DNS with longer timeout
-        if [ -n "$bs_port" ]; then
-            dig @"$bs_host" -p "$bs_port" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && bootstrap_dns_status=1
-        else
-            dig @"$bs_host" "$domain" +timeout=3 +tries=2 > /dev/null 2>&1 && bootstrap_dns_status=1
-        fi
-        
-        # Fallback: try alternative DNS servers if primary fails
-        if [ "$bootstrap_dns_status" -eq 0 ]; then
-            for fallback_dns in 8.8.8.8 9.9.9.9 1.1.1.1; do
-                dig @"$fallback_dns" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1 && {
-                    bootstrap_dns_status=1
-                    bootstrap_dns_server="$bootstrap_dns_server (fallback: $fallback_dns)"
-                    break
-                }
-            done
-        fi
+    if [ -n "$bootstrap_check_pid" ]; then
+        wait "$bootstrap_check_pid"
+        [ -s "$bootstrap_result_file" ] && bootstrap_dns_status=1
     fi
+    if [ -s "$bootstrap_result_file" ]; then
+        local fallback_dns
+        for fallback_dns in 8.8.8.8 9.9.9.9 1.1.1.1; do
+            if grep -qx "$fallback_dns" "$bootstrap_result_file"; then
+                bootstrap_dns_server="$bootstrap_dns_server (fallback: $fallback_dns)"
+                break
+            fi
+        done
+    fi
+    rm -f "$bootstrap_result_file"
 
     # Check if dnsmasq sends only selected source interfaces through Podkop DNS.
     config_load dhcp
@@ -12159,7 +12789,6 @@ check_nft_rules() {
 
     wait $pid1 2> /dev/null
     wait $pid2 2> /dev/null
-    sleep 1
 
     # Check if KrotTable exists
     if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
@@ -13074,6 +13703,9 @@ Available commands:
     uninstall               Remove K.R.O.T. files installed outside opkg/apk
     main                    Run main K.R.O.T. process
     list_update             Update remote lists
+    hagezi_update           Download the configured HaGeZi blocklist and rebuild its rule_set
+    hagezi_update_async     Start a background HaGeZi blocklist update
+    hagezi_update_status    Get background HaGeZi blocklist update status
     list_update_if_due      Update remote lists only when the configured interval has elapsed
     subscription_update [rule] [source_index]
                             Update all subscription proxies, one rule, or one source in a rule
@@ -13110,6 +13742,7 @@ Available commands:
     get_zapret_status       Get zapret provider and K.R.O.T.-managed nfqws status
     get_byedpi_status       Get ByeDPI provider and K.R.O.T.-managed ciadpi status
     get_system_info         Get system information in JSON format
+    get_router_metrics      Get router CPU temperature and memory usage in JSON format
     generate_reality_keypair
                             Generate a sing-box Reality key pair in JSON format
     component_action        Manage K.R.O.T., sing-box, zapret, and ByeDPI components
@@ -13158,6 +13791,24 @@ list_update)
     ;;
 list_update_if_due)
     list_update_if_due
+    ;;
+hagezi_update)
+    if hagezi_update; then
+        # sing-box loads local rule-sets only at startup: when ad blocking is
+        # active, reload the service so the fresh blocklist takes effect now.
+        config_get_bool hagezi_enabled "settings" "hagezi_enabled" 0
+        if [ "$hagezi_enabled" -eq 1 ] && pidof sing-box >/dev/null 2>&1; then
+            reload
+        fi
+    else
+        exit 1
+    fi
+    ;;
+hagezi_update_async)
+    hagezi_update_async
+    ;;
+hagezi_update_status)
+    hagezi_update_status
     ;;
 sidecar_watchdog)
     sidecar_watchdog
@@ -13257,6 +13908,9 @@ get_byedpi_status)
     ;;
 get_system_info)
     get_system_info
+    ;;
+get_router_metrics)
+    get_router_metrics
     ;;
 generate_reality_keypair)
     generate_reality_keypair

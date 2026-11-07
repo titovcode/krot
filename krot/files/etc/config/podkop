@@ -22,6 +22,11 @@ config settings 'settings'
         option exclude_ntp '0'
         option shutdown_correctly '0'
         #list routing_excluded_ips '192.168.1.3'
+        # Built-in HaGeZi DNS blocklists (disabled by default)
+        option hagezi_enabled '0'
+        option hagezi_list 'multi'
+        option hagezi_last_update 'never'
+        option hagezi_domains_count '0'
 
 #config section 'subscription_example'
 #        option label 'Subscription'

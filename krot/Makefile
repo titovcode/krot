@@ -64,9 +64,10 @@ if [ -x /etc/init.d/krot ] && krot_has_enabled_sections; then
 	/etc/init.d/krot start >/dev/null 2>&1 || true
 fi
 
-# Install automation cron job (runs every minute, script rate-limits itself)
-if ! grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
-	echo "* * * * * /usr/lib/krot/automation.sh >/dev/null 2>&1" >> /etc/crontabs/root 2>/dev/null || true
+# Automation runs as a procd-respawned instance, not through cron. Remove
+# entries from older packages because crond logs every invocation as cron.err.
+if grep -q "krot/automation.sh" /etc/crontabs/root 2>/dev/null; then
+	sed -i "/krot\/automation\.sh/d" /etc/crontabs/root 2>/dev/null || true
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 fi
 

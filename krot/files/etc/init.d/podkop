@@ -180,8 +180,22 @@ should_skip_internal_config_reload() {
     return 1
 }
 
+remove_legacy_cron_jobs() {
+    local jobs current_jobs
+    current_jobs="$(crontab -l 2>/dev/null)"
+    jobs="$(printf '%s\n' "$current_jobs" | awk '
+        /^[[:space:]]*[#[:space:]]/ { print; next }
+        index($0, "/usr/lib/krot/automation.sh") ||
+            index($0, "/usr/bin/krot sidecar_watchdog") { next }
+        { print }
+    ')"
+    [ "$jobs" = "$current_jobs" ] || printf '%s\n' "$jobs" | crontab -
+}
+
 start_service() {
     echo "Start K.R.O.T."
+
+    remove_legacy_cron_jobs
 
     if [ ! -x "$PODKOP_BIN" ]; then
         restore_dnsmasq_failsafe
@@ -200,6 +214,20 @@ start_service() {
     fi
     procd_set_param stdout 1
     procd_set_param stderr 1
+    procd_close_instance
+
+    # Keep automation off crond: BusyBox logs every normal cron invocation as
+    # cron.err. The script exits immediately when automation is disabled;
+    # procd then waits 60 seconds before the next interval-limited check.
+    procd_open_instance automation
+    procd_set_param command /usr/lib/krot/automation.sh
+    procd_set_param respawn 3600 60 0
+    procd_close_instance
+
+    # Preserve the former two-minute watchdog cadence without cron.err noise.
+    procd_open_instance sidecar_watchdog
+    procd_set_param command "$PODKOP_BIN" sidecar_watchdog
+    procd_set_param respawn 3600 120 0
     procd_close_instance
 }
 

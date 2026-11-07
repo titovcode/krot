@@ -1,12 +1,126 @@
 "use strict";
 "require form";
 "require uci";
+"require ui";
+"require rpc";
 "require baseclass";
 "require tools.widgets as widgets";
 "require view.krot.local_devices as localDevices";
 "require view.krot.main as main";
 
 const UCI_PACKAGE = main.PODKOP_UCI_PACKAGE;
+
+// The update runs detached on the router: a synchronous exec would be
+// killed by the HTTP/ubus request timeout mid-download.
+const callHageziAction = rpc.declare({
+  object: "file",
+  method: "exec",
+  params: ["command", "params"],
+});
+
+function pollHageziUpdate(attemptsLeft) {
+  return callHageziAction("/usr/bin/krot", ["hagezi_update_status"]).then(
+    function (res) {
+      let state = {};
+      try {
+        state = JSON.parse(res.stdout || "{}");
+      } catch (e) {}
+
+      if (state.status === "running" || state.status === "started") {
+        if (attemptsLeft <= 0) {
+          throw new Error(_("Timeout"));
+        }
+        return new Promise(function (resolve) {
+          setTimeout(resolve, 2000);
+        }).then(function () {
+          return pollHageziUpdate(attemptsLeft - 1);
+        });
+      }
+      if (state.status === "done" && state.exit_code === 0) {
+        return;
+      }
+      throw new Error(_("Update failed on the router"));
+    },
+  );
+}
+
+// Wraps the HaGeZi option rows into a single bordered panel and moves it to
+// the bottom of the Rules tab. Called from podkop.js after the map has
+// rendered, because LuCI renders each option as a standalone .cbi-value row
+// with no grouping container. UCI bindings are keyed by cbid, so relocating
+// the DOM nodes does not affect Save & Apply.
+const HAGEZI_SHIELD_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>';
+
+function formatHageziLastUpdate(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(
+    `${value || ""}`.trim(),
+  );
+  return m ? `${m[3]}.${m[2]}.${m[1]}, ${m[4]}` : value;
+}
+
+function groupHageziOptions(rootEl) {
+  const names = [
+    "hagezi_enabled",
+    "hagezi_list",
+    "_hagezi_update",
+    "hagezi_last_update",
+    "hagezi_domains_count",
+  ];
+  const rows = names
+    .map((name) => rootEl.querySelector('.cbi-value[data-name="' + name + '"]'))
+    .filter(Boolean);
+
+  if (rows.length === 0 || rows[0].closest(".krot-hagezi-panel")) {
+    return;
+  }
+
+  const panel = document.createElement("div");
+  panel.className = "krot-hagezi-panel";
+
+  const head = document.createElement("div");
+  head.className = "krot-hagezi-panel__head";
+
+  const title = document.createElement("h3");
+  title.className = "krot-hagezi-panel__title";
+  title.innerHTML = HAGEZI_SHIELD_SVG;
+  title.appendChild(document.createTextNode(_("HaGeZi — DNS Blocklists")));
+  head.appendChild(title);
+
+  const stats = document.createElement("div");
+  stats.className = "krot-hagezi-panel__stats";
+  head.appendChild(stats);
+
+  const body = document.createElement("div");
+  body.className = "krot-hagezi-panel__body";
+
+  panel.appendChild(head);
+  panel.appendChild(body);
+
+  rows.forEach((row) => {
+    const name = row.getAttribute("data-name");
+    if (name === "hagezi_last_update") {
+      const out = row.querySelector("output");
+      if (out) {
+        out.textContent = formatHageziLastUpdate(out.textContent);
+      }
+      stats.appendChild(row);
+    } else if (name === "hagezi_domains_count") {
+      stats.appendChild(row);
+    } else {
+      body.appendChild(row);
+    }
+  });
+
+  // The Rules tab container is #cbi-<config>-<section type>; the type of the
+  // rules GridSection is "section". Fall back to leaving the panel in place.
+  const rulesTab = rootEl.querySelector("#cbi-krot-section");
+  if (rulesTab) {
+    rulesTab.appendChild(panel);
+  } else {
+    rows[0].parentNode.insertBefore(panel, rows[0]);
+  }
+}
 
 function isSingBoxDuration(value) {
   return /^([0-9]+(?:\.[0-9]+)?(?:ns|us|ms|s|m|h|d))+$/.test(value);
@@ -69,8 +183,8 @@ function createSettingsContent(section, capabilities) {
     return validation.message;
   };
 
-  if (capabilities?.hageziInstalled) {
-    // HaGeZi settings are available only while the module is installed.
+  // HaGeZi DNS blocklists are built into K.R.O.T. — always available.
+  {
     o = section.option(
       form.Flag,
       "hagezi_enabled",
@@ -85,15 +199,81 @@ function createSettingsContent(section, capabilities) {
       "hagezi_list",
       _("HaGeZi Blocklist"),
       _(
-        "Select blocklist: Normal (balanced), Pro (extended), Ultimate (maximum protection)",
+        "Select blocklist. Full versions block more but use more RAM; Mini versions are for low-memory devices. The list is downloaded automatically on Save & Apply.",
       ),
     );
+    o.value("light", _("HaGeZi Multi LIGHT (minimal)"));
     o.value("multi", _("HaGeZi Multi NORMAL (recommended)"));
     o.value("pro", _("HaGeZi Multi PRO (extended)"));
+    o.value("pro.plus", _("HaGeZi Multi PRO++ (maximum)"));
     o.value("ultimate", _("HaGeZi Multi ULTIMATE (aggressive)"));
+    o.value("pro.mini", _("HaGeZi PRO Mini (low memory)"));
+    o.value("pro.plus.mini", _("HaGeZi PRO++ Mini (low memory)"));
+    o.value("ultimate.mini", _("HaGeZi ULTIMATE Mini (low memory)"));
+    o.value("tif.mini", _("HaGeZi TIF Mini (threats only)"));
+    o.value("tif.medium", _("HaGeZi TIF Medium (threats only, large)"));
     o.default = "multi";
     o.rmempty = false;
     o.depends("hagezi_enabled", "1");
+
+    o = section.option(form.Button, "_hagezi_update", _("Blocklist update"));
+    o.inputtitle = _("Update now");
+    o.inputstyle = "reload";
+    o.depends("hagezi_enabled", "1");
+    o.onclick = function (ev) {
+      const btn = ev.target;
+      btn.disabled = true;
+      return callHageziAction("/usr/bin/krot", ["hagezi_update_async"])
+        .then(function () {
+          return pollHageziUpdate(120);
+        })
+        .then(function () {
+          // uci.unload() is synchronous and returns undefined, not a promise.
+          uci.unload("krot");
+          return uci.load("krot");
+        })
+        .then(function () {
+          const lastUpdate = uci.get("krot", "settings", "hagezi_last_update");
+          const domainsCount = uci.get(
+            "krot",
+            "settings",
+            "hagezi_domains_count",
+          );
+          // DummyValue renders the visible text in an <output> next to a
+          // hidden input that carries the cbid id.
+          ["hagezi_last_update", "hagezi_domains_count"].forEach(function (
+            name,
+          ) {
+            const hidden = document.getElementById("cbid.krot.settings." + name);
+            const out = hidden && hidden.parentNode
+              ? hidden.parentNode.querySelector("output")
+              : null;
+            if (out) {
+              out.textContent =
+                name === "hagezi_last_update"
+                  ? formatHageziLastUpdate(lastUpdate) || "-"
+                  : domainsCount || "0";
+            }
+          });
+          main.injectGlobalStyles();
+          main.showToast(
+            _("HaGeZi blocklist updated: %s domains blocked.").format(
+              domainsCount || "0",
+            ),
+            "success",
+          );
+        })
+        .catch(function (e) {
+          main.injectGlobalStyles();
+          main.showToast(
+            _("HaGeZi blocklist update failed: %s").format(e.message),
+            "error",
+          );
+        })
+        .finally(function () {
+          btn.disabled = false;
+        });
+    };
 
     o = section.option(
       form.DummyValue,
@@ -146,31 +326,6 @@ function createSettingsContent(section, capabilities) {
   o.nobridges = false;
   o.noinactive = false;
   o.multiple = true;
-  o.filter = function (section_id, value) {
-    // Block specific interface names from being selectable
-    const blocked = ["wan", "phy0-ap0", "phy1-ap0", "pppoe-wan"];
-    if (blocked.includes(value)) {
-      return false;
-    }
-
-    // Try to find the device object by its name
-    const device = this.devices.find((dev) => dev.getName() === value);
-
-    // If no device is found, allow the value
-    if (!device) {
-      return true;
-    }
-
-    // Check the type of the device
-    const type = device.getType();
-
-    // Consider any Wi-Fi / wireless / wlan device as invalid
-    const isWireless =
-      type === "wifi" || type === "wireless" || type.includes("wlan");
-
-    // Allow only non-wireless devices
-    return !isWireless;
-  };
 
   o = section.option(
     form.Flag,
@@ -188,50 +343,10 @@ function createSettingsContent(section, capabilities) {
     _("Select the network interface to which the traffic will originate"),
   );
   o.noaliases = true;
+  o.nobridges = false;
+  o.noinactive = false;
   o.multiple = false;
   o.depends("enable_output_network_interface", "1");
-  o.filter = function (section_id, value) {
-    // Blocked interface names that should never be selectable
-    const blockedInterfaces = ["br-lan"];
-
-    // Reject immediately if the value matches any blocked interface
-    if (blockedInterfaces.includes(value)) {
-      return false;
-    }
-
-    // Reject lan*
-    if (value.startsWith("lan")) {
-      return false;
-    }
-
-    // Reject tun*, wg*, vpn*, awg*, oc*
-    if (
-      value.startsWith("tun") ||
-      value.startsWith("wg") ||
-      value.startsWith("vpn") ||
-      value.startsWith("awg") ||
-      value.startsWith("oc")
-    ) {
-      return false;
-    }
-
-    // Try to find the device object with the given name
-    const device = this.devices.find((dev) => dev.getName() === value);
-
-    // If no device is found, allow the value
-    if (!device) {
-      return true;
-    }
-
-    // Get the device type (e.g., "wifi", "ethernet", etc.)
-    const type = device.getType();
-
-    // Reject wireless-related devices
-    const isWireless =
-      type === "wifi" || type === "wireless" || type.includes("wlan");
-
-    return !isWireless;
-  };
 
   o = section.option(
     form.Flag,
@@ -565,6 +680,7 @@ function createSettingsContent(section, capabilities) {
 
 const EntryPoint = {
   createSettingsContent,
+  groupHageziOptions,
 };
 
 return baseclass.extend(EntryPoint);

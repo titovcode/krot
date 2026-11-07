@@ -33,10 +33,29 @@ check_and_restart() {
     max_failures=$(echo "$max_failures" | tr -d "'\"")
     interval=$(echo "$interval" | tr -d "'\"")
     port=$(echo "$port" | tr -d "'\"")
-    
+
+    case "$interval" in
+        '' | *[!0-9]*) interval=30 ;;
+    esac
+    [ "$interval" -gt 0 ] || interval=30
+
     local state_file="$STATE_DIR/$section.fail_count"
     local last_check="$STATE_DIR/$section.last_check"
-    
+    local now last_check_at=0
+
+    # Cron wakes the script every minute; perform the actual check only at
+    # the interval configured for this section.
+    now=$(date +%s)
+    [ -f "$last_check" ] && last_check_at=$(cat "$last_check" 2>/dev/null || echo 0)
+    case "$last_check_at" in
+        '' | *[!0-9]*) last_check_at=0 ;;
+    esac
+    [ "$last_check_at" -le "$now" ] || last_check_at=0
+    if [ "$last_check_at" -gt 0 ] && [ $((now - last_check_at)) -lt "$interval" ]; then
+        return 0
+    fi
+    echo "$now" > "$last_check" 2>/dev/null || true
+
     # Measure latency
     local latency
     latency=$(measure_latency "$iface" "$port")
@@ -149,5 +168,8 @@ measure_latency() {
 }
 
 # Main execution
+# Do not parse UCI on every cron wake-up when no automation is enabled.
+uci -q show krot 2>/dev/null | grep -q "\.automation_enabled='1'" || exit 0
+
 config_load krot
 config_foreach check_and_restart section

@@ -171,6 +171,11 @@ sing_box_cf_add_proxy_outbound() {
     url=$(url_decode "$url")
     url=$(url_strip_fragment "$url")
 
+    # The server address is printed to stderr so the caller can capture it
+    # without re-parsing the whole config JSON (which is especially expensive
+    # inside a batch). stdout carries the updated config only.
+    local _server=""
+
     local scheme
     scheme="$(url_get_scheme "$url")"
     case "$scheme" in
@@ -199,6 +204,7 @@ sing_box_cf_add_proxy_outbound() {
             "" \
             "$([ "$udp_over_tcp" = "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
         )"
+        _server="$host"
         ;;
     vless)
         local tag host port uuid flow packet_encoding
@@ -216,6 +222,7 @@ sing_box_cf_add_proxy_outbound() {
         config=$(sing_box_cm_add_vless_outbound "$config" "$tag" "$host" "$port" "$uuid" "$flow" "" "$packet_encoding")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
+        _server="$host"
         ;;
     ss)
         local userinfo tag host port method password udp_over_tcp
@@ -245,6 +252,7 @@ sing_box_cf_add_proxy_outbound() {
                 "" \
                 "$([ "$udp_over_tcp" = "1" ] && echo 2)" # if udp_over_tcp is enabled, enable version 2
         )
+        _server="$host"
         ;;
     trojan)
         local tag host port password
@@ -256,6 +264,7 @@ sing_box_cf_add_proxy_outbound() {
         config=$(sing_box_cm_add_trojan_outbound "$config" "$tag" "$host" "$port" "$password")
         config=$(_add_outbound_security "$config" "$tag" "$url")
         config=$(_add_outbound_transport "$config" "$tag" "$url")
+        _server="$host"
         ;;
     hysteria2 | hy2)
         local tag host port password obfuscator_type obfuscator_password upload_mbps download_mbps
@@ -271,6 +280,7 @@ sing_box_cf_add_proxy_outbound() {
         config=$(sing_box_cm_add_hysteria2_outbound "$config" "$tag" "$host" "$port" "$password" "$obfuscator_type" \
             "$obfuscator_password" "$upload_mbps" "$download_mbps")
         config=$(_add_outbound_security "$config" "$tag" "$url")
+        _server="$host"
         ;;
     *)
         log "Unsupported proxy $scheme type. Aborted." "fatal"
@@ -278,6 +288,7 @@ sing_box_cf_add_proxy_outbound() {
         ;;
     esac
 
+    printf '%s\n' "$_server" >&2
     echo "$config"
 }
 

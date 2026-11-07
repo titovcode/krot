@@ -80,10 +80,21 @@ updates_init_tmp_dir() {
 
 updates_cleanup() {
     [ -n "$UPDATES_TMP_DIR" ] && rm -rf "$UPDATES_TMP_DIR"
+    UPDATES_TMP_DIR=""
+
+    # Safety net: remove any stale krot-updates temp directories older than
+    # 30 minutes. These leak when a code path reaches Hub helpers without
+    # going through hub_guarded_call() or the component_action trap.
+    find /tmp -maxdepth 1 -name 'krot-updates.*' -type d -mmin +30 -exec rm -rf {} + 2>/dev/null || true
 
     # Clean old HTTP cache entries (older than 1 hour) to prevent /tmp overflow
     if [ -d "$UPDATES_HTTP_CACHE_DIR" ]; then
         find "$UPDATES_HTTP_CACHE_DIR" -type f -mmin +60 -delete 2>/dev/null || true
+    fi
+
+    # Clean finished component-action job files older than TTL
+    if [ -d "$UPDATES_JOB_DIR" ]; then
+        find "$UPDATES_JOB_DIR" -name '*.json' -mmin +"$UPDATES_JOB_FINISHED_TTL_MINUTES" -delete 2>/dev/null || true
     fi
 }
 
@@ -2000,9 +2011,6 @@ hub_detect_installed_version() {
             /opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -n 1 \
                 | sed 's/^AdGuard Home, version //; s/^v//'
             ;;
-        hagezi)
-            [ -f /etc/krot/hagezi/version ] && head -n 1 /etc/krot/hagezi/version 2>/dev/null
-            ;;
         olcrtc)
             [ -f /opt/olcrtc/VERSION ] && { head -n 1 /opt/olcrtc/VERSION 2>/dev/null; return 0; }
             ;;
@@ -2059,10 +2067,6 @@ hub_module_installed_status() {
             hub_installed_version="${hub_installed_version#AdGuard Home, version }"
             hub_installed_version="${hub_installed_version#v}"
             ;;
-        hagezi)
-            is_hagezi_installed || return 1
-            hub_installed_version="$(head -n 1 /etc/krot/hagezi/version 2>/dev/null || true)"
-            ;;
         olcrtc)
             is_olcrtc_installed || return 1
             hub_installed_version="$(get_olcrtc_version 2>/dev/null || true)"
@@ -2086,11 +2090,6 @@ hub_module_installed_status() {
 # Whether AdGuard Home binary is present. Mirrors is_zapret_installed / is_byedpi_installed.
 is_adguard_installed() {
     [ -x /opt/AdGuardHome/AdGuardHome ]
-}
-
-# Whether HaGeZi DNS blocklists are installed (module + at least one list downloaded).
-is_hagezi_installed() {
-    [ -d /etc/krot/hagezi ] && [ -f /etc/krot/hagezi/current.txt ]
 }
 
 # Whether the olcRTC tunnel module is present: init script plus the srv binary
@@ -2377,10 +2376,22 @@ hub_get_modules() {
 
     # Serve the recent listing when one exists: this function performs one
     # HTTPS request per module, and LuCI calls it on every page build. Set
-    # KROT_HUB_CACHE_TTL=0 to force a fresh fetch (the Modules tab does that
+    # HUB_CACHE_MAX_AGE=0 to force a fresh fetch (the Modules tab does that
     # through hub_refresh_modules_cache).
     if [ "$HUB_CACHE_MAX_AGE" -gt 0 ] && cached="$(hub_cache_read)"; then
         printf '%s\n' "$cached"
+        return 0
+    fi
+
+    # Stale-while-revalidate: when the cache is stale but present, serve it
+    # immediately and refresh in the background so the UI never waits for
+    # the network. The background refresh is skipped when a component action
+    # (install/remove) is already running to avoid lock contention.
+    if [ "$HUB_CACHE_MAX_AGE" -gt 0 ] && [ -s "$HUB_CACHE_FILE" ]; then
+        if [ ! -d /var/run/krot/component-action.lock ]; then
+            (hub_refresh_modules_cache >/dev/null 2>&1 &)
+        fi
+        cat "$HUB_CACHE_FILE"
         return 0
     fi
 
@@ -2535,7 +2546,13 @@ hub_cache_write() {
     case "$1" in
     "[]") return 0 ;;
     esac
-    printf '%s\n' "$1" > "$HUB_CACHE_FILE" 2> /dev/null || true
+    # Atomic write: a concurrent reader must never see a truncated file.
+    local tmp
+    tmp="$(mktemp "$HUB_CACHE_FILE.XXXXXX" 2>/dev/null)" || {
+        printf '%s\n' "$1" > "$HUB_CACHE_FILE" 2> /dev/null || true
+        return 0
+    }
+    printf '%s\n' "$1" > "$tmp" 2> /dev/null && mv "$tmp" "$HUB_CACHE_FILE" 2> /dev/null || rm -f "$tmp"
 }
 
 # Echo the cached listing when it is still fresh, otherwise nothing. Cache

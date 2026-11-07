@@ -733,9 +733,13 @@ function process_shadowsocks(raw) {
         }
     }
 
+    // Use fragment as display name if present; otherwise derive from server:port.
+    // Also store fragment as remark so downstream code can use it for display.
+    let display_tag = fragment != "" ? fragment : (host_port[0] + ":" + host_port[1]);
     let outbound = {
         type: "shadowsocks",
-        tag: fragment != "" ? fragment : (host_port[0] + ":" + host_port[1]),
+        tag: display_tag,
+        remark: fragment,
         share_link: raw,
         server: host_port[0],
         server_port: host_port[1],

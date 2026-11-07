@@ -237,7 +237,11 @@ function prepare_subscription(config_path, outbounds_path, output_path, supports
     for (let i = 0; i < length(outbounds); i++) {
         let outbound = outbounds[i];
         let index = length(prepared) + 1;
+        // Prefer remark (human-readable name from URL fragment) over tag.
+        // For SS links without fragment, tag already contains server:port.
         let display_name = safe_string(outbound && (outbound.remark || outbound.tag), "server-" + index);
+        if (display_name == "" && outbound && outbound.server != "")
+            display_name = outbound.server + (outbound.server_port ? ":" + outbound.server_port : "");
         let skip_reason = prefilter_skip_reason(outbound, supports_xhttp, plugin_supports);
 
         if (skip_reason != "") {
