@@ -689,9 +689,10 @@ const EntryPoint = {
       singBoxExtended: false,
     };
 
-    // Reuse the already-fetched system info from coreService/store instead of
-    // making a duplicate blocking RPC call before CBI render. This eliminates
-    // one fs.exec() that competed with LuCI's own XHR on the rpcd channel.
+    // Reuse cached system info when available. On a cold visit, request only
+    // the sing-box capability flag through the backend's pre-lib fast path:
+    // the full system report takes over a second and must not hold the entire
+    // page at "Loading view..." just to populate protocol choices.
     try {
       const cachedInfo = main.store?.get?.()?.diagnosticsSystemInfo;
       if (cachedInfo?.loaded) {
@@ -699,15 +700,11 @@ const EntryPoint = {
           Number(cachedInfo.sing_box_extended) === 1,
         );
       } else {
-        // Fallback: fetch only if store hasn't loaded yet (first visit).
-        // Use a short timeout so we don't block CBI render for too long.
-        const systemInfoResponse = await Promise.race([
-          main.PodkopShellMethods.getSystemInfo(),
-          new Promise((resolve) => setTimeout(() => resolve({ success: false }), 3000)),
-        ]);
+        const capabilitiesResponse =
+          await main.PodkopShellMethods.getSingBoxCapabilities();
         serverCapabilities.singBoxExtended = Boolean(
-          systemInfoResponse?.success &&
-            Number(systemInfoResponse.data?.sing_box_extended) === 1,
+          capabilitiesResponse?.success &&
+            Number(capabilitiesResponse.data?.sing_box_extended) === 1,
         );
       }
     } catch (error) {

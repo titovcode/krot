@@ -72,6 +72,22 @@ if [ "$PODKOP_COMMAND" = "get_wan_metrics" ]; then
     exit 0
 fi
 
+# The initial LuCI render needs only this capability flag, not the full system
+# report. Keep it on the pre-lib fast path so "Loading view..." does not wait
+# for package versions, provider checks and the rest of build_system_info().
+if [ "$PODKOP_COMMAND" = "get_sing_box_capabilities" ]; then
+    sing_box_version=""
+    sing_box_extended=0
+    if command -v sing-box >/dev/null 2>&1; then
+        sing_box_version="$(sing-box version 2>/dev/null | head -n 1)"
+        case "$sing_box_version" in
+        *extended*) sing_box_extended=1 ;;
+        esac
+    fi
+    printf '{"sing_box_extended":%s}\n' "$sing_box_extended"
+    exit 0
+fi
+
 # Fast path for the LuCI header widget. LuCI polls this every 10s while the page
 # is open, and the command only reads /proc and /sys. Answering it before the 14
 # libraries are sourced and the remaining ~13.8k lines are parsed saves the
