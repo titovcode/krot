@@ -294,7 +294,16 @@ async function fetchWanMetrics() {
 
 function startWanMetricsPolling() {
   stopWanMetricsPolling();
-  fetchWanMetrics();
+  const generation = wanMetricsGeneration;
+  fetchWanMetrics().finally(() => {
+    // A rate needs two counter samples. Take the second one quickly so the
+    // graph appears immediately, then continue with the regular interval.
+    window.setTimeout(() => {
+      if (generation === wanMetricsGeneration) {
+        fetchWanMetrics();
+      }
+    }, 250);
+  });
   wanMetricsTimer = window.setInterval(
     fetchWanMetrics,
     WAN_METRICS_POLL_INTERVAL,

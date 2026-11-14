@@ -743,9 +743,8 @@ function ensureActionProvidersAvailabilityLoaded() {
   actionProvidersAvailabilityPromise = Promise.allSettled([
     Promise.resolve({ success: false, message: "disabled" }),
     Promise.resolve({ success: false, message: "disabled" }),
-    loadHubModuleActions(),
   ])
-    .then(([zapretResult, byedpiResult, actionsResult]) => {
+    .then(([zapretResult, byedpiResult]) => {
       const zapret =
         zapretResult && zapretResult.status === "fulfilled"
           ? zapretResult.value
@@ -754,14 +753,11 @@ function ensureActionProvidersAvailabilityLoaded() {
         byedpiResult && byedpiResult.status === "fulfilled"
           ? byedpiResult.value
           : null;
-      const moduleActions =
-        actionsResult &&
-        actionsResult.status === "fulfilled" &&
-        Array.isArray(actionsResult.value)
-          ? actionsResult.value
-          : [];
 
-      actionProvidersAvailabilityState.moduleActions = moduleActions;
+      // Hub data is needed only by the rule editor. Do not block the initial
+      // CBI render on a cold-cache GitHub fetch; the deferred warm-up below
+      // and addModalOptions() populate module actions independently.
+      actionProvidersAvailabilityState.moduleActions = getModuleActions();
       actionProvidersAvailabilityState.loaded = true;
       actionProvidersAvailabilityState.zapretInstalled = Boolean(
         zapret && zapret.success && zapret.data && zapret.data.installed,
@@ -3317,12 +3313,35 @@ function createSectionContent(section) {
   //     options are also added to the main section so `cloneOptions()` copies
   //     them into subsequently opened modals and table rendering stays stable.
   ensureModuleConfigOptions(section);
-  ensureModuleActionsLoaded().then(() => {
-    ensureModuleConfigOptions(section);
-  });
+  window.setTimeout(() => {
+    ensureModuleActionsLoaded().then(() => {
+      section.children.forEach((option) => {
+        if (option.option === "action") {
+          populateActionOptionValues(option);
+        }
+      });
+      ensureModuleConfigOptions(section);
+      document
+        .querySelectorAll('[data-name="_action_display"]')
+        .forEach((node) => {
+          const row = node.closest("[data-section-id]");
+          const badge = node.querySelector(".ifacebadge");
+          if (row && badge) {
+            badge.textContent = getRuleActionDisplayMarkup(
+              row.getAttribute("data-section-id"),
+            );
+          }
+        });
+    });
+  }, 3000);
 
   section.addModalOptions = function (modalSection, _section_id, _ev) {
     return ensureModuleActionsLoaded().then(() => {
+      modalSection.children.forEach((option) => {
+        if (option.option === "action") {
+          populateActionOptionValues(option);
+        }
+      });
       ensureModuleConfigOptions(modalSection);
     });
   };
