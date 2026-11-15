@@ -123,7 +123,7 @@ check_logs() {
     start_line=$(echo "$logs" | grep -n "krot.*Starting K.R.O.T." | tail -n 1 | cut -d: -f1)
 
     if [ -n "$start_line" ]; then
-        echo "$logs" | tail -n +"$start_line"
+        echo "$logs" | tail -n +"$start_line" | tail -n 500
     else
         krot_fast_notice "No 'Starting K.R.O.T.' message found, showing last 100 lines"
         echo "$logs" | tail -n 100

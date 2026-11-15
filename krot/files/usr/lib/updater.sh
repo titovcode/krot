@@ -2372,7 +2372,7 @@ hub_get_modules() {
     local index_url="https://raw.githubusercontent.com/${hub_repo}/main/hub/index.json?v=${_cache_ts}"
     local tmp_index tmp_module module_ids module_id module_json_url
     local module_json module_component installed installed_version installed_version_escaped installed_json module_manifest_version latest_version_escaped first=1 result="["
-    local injected_json cached
+    local injected_json cached latest_version_url latest_version_json_key tmp_latest upstream_version
 
     # Serve the recent listing when one exists: this function performs one
     # HTTPS request per module, and LuCI calls it on every page build. Set
@@ -2439,6 +2439,30 @@ hub_get_modules() {
             # Manifest version = what upstream currently offers (latest_version
             # for the UI update badge). Installed state is detected separately.
             module_manifest_version="$(printf '%s' "$module_json" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+            # Modules with independent upstream releases can declare a JSON
+            # endpoint instead of requiring a manifest commit for every release.
+            latest_version_url="$(printf '%s' "$module_json" | grep -o '"latest_version_url"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"latest_version_url"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+            latest_version_json_key="$(printf '%s' "$module_json" | grep -o '"latest_version_json_key"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"latest_version_json_key"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+            # Compatibility with Hub manifests published before the generic
+            # latest_version_url declaration was introduced.
+            if [ "$module_id" = "xray" ] && [ -z "$latest_version_url" ]; then
+                latest_version_url="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+                latest_version_json_key="tag_name"
+            fi
+            if [ -n "$latest_version_url" ] && [ -n "$latest_version_json_key" ]; then
+                case "$latest_version_json_key" in
+                    *[!A-Za-z0-9_-]*) latest_version_json_key="" ;;
+                esac
+            fi
+            if [ -n "$latest_version_url" ] && [ -n "$latest_version_json_key" ]; then
+                tmp_latest="$UPDATES_TMP_DIR/hub-${module_id}-latest.json"
+                upstream_version=""
+                if updates_http_get "$latest_version_url" > "$tmp_latest" 2>/dev/null && [ -s "$tmp_latest" ]; then
+                    upstream_version="$(grep -o "\"${latest_version_json_key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$tmp_latest" | head -1 | sed "s/.*\"${latest_version_json_key}\"[[:space:]]*:[[:space:]]*\"//;s/\"$//")"
+                    upstream_version="${upstream_version#v}"
+                    [ -z "$upstream_version" ] || module_manifest_version="$upstream_version"
+                fi
+            fi
             # Determine installed status for this module via its declared `component`.
             module_component="$(printf '%s' "$module_json" | sed -n 's/.*"component"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
             if hub_module_installed_status "$module_component"; then
@@ -2983,6 +3007,7 @@ hub_install_module() {
     local module_id="$1"
     local custom_repo="$2"
     local hub_repo branch module_json_url module_json script_url tmp_dir tmp_script
+    local module_component script_kind
 
     case "$module_id" in
         *[^a-zA-Z0-9_-]*)
@@ -3013,9 +3038,19 @@ hub_install_module() {
     tmp_module_json="$tmp_dir/${module_id}-module.json"
 
     updates_log "Fetching module.json for ${module_id} from ${module_json_url}"
+    script_path=""
+    script_kind="install"
     if updates_http_get "$module_json_url" > "$tmp_module_json" 2>/dev/null && [ -s "$tmp_module_json" ]; then
-        # Extract install_script path from module.json (simple grep, no jq dependency)
-        script_path="$(grep -o '"install_script"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | sed 's/.*"install_script"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+        module_component="$(grep -o '"component"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"component"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+        # An installer may intentionally keep an existing binary. Use the
+        # module's updater when one is declared and the module is installed.
+        if [ -n "$module_component" ] && hub_module_installed_status "$module_component"; then
+            script_path="$(grep -o '"update_script"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | sed 's/.*"update_script"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+            [ -z "$script_path" ] || script_kind="update"
+        fi
+        if [ -z "$script_path" ]; then
+            script_path="$(grep -o '"install_script"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | sed 's/.*"install_script"[[:space:]]*:[[:space:]]*"//;s/"$//')"
+        fi
     fi
 
     # Fallback to default path if module.json fetch failed or install_script not found
@@ -3024,9 +3059,9 @@ hub_install_module() {
     fi
 
     script_url="https://raw.githubusercontent.com/${hub_repo}/${branch}/${script_path}"
-    tmp_script="$tmp_dir/${module_id}-install.sh"
+    tmp_script="$tmp_dir/${module_id}-${script_kind}.sh"
 
-    updates_log "Downloading install script for ${module_id} from ${script_url}"
+    updates_log "Downloading ${script_kind} script for ${module_id} from ${script_url}"
     updates_http_get "$script_url" > "$tmp_script" 2>/dev/null \
         || updates_fail "hub" "hub_install_${module_id}" "Failed to download install script for ${module_id}"
 
@@ -3048,7 +3083,7 @@ hub_install_module() {
     # script ran (it may have picked a newer release than the manifest), not
     # the static module.json value. VERSION-file / live detection first,
     # manifest version only as a last-resort fallback.
-    local installed_version="" detected_version="" module_component=""
+    local installed_version="" detected_version=""
     if [ -s "$tmp_module_json" ]; then
         module_component="$(grep -o '"component"[[:space:]]*:[[:space:]]*"[^"]*"' "$tmp_module_json" 2>/dev/null | head -1 | sed 's/.*"component"[[:space:]]*:[[:space:]]*"//;s/"$//')"
     fi

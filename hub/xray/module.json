@@ -8,6 +8,8 @@
   "component": "xray",
   "repo": "titovcode/krot",
   "version": "26.3.27",
+  "latest_version_url": "https://api.github.com/repos/XTLS/Xray-core/releases/latest",
+  "latest_version_json_key": "tag_name",
   "actions": [
     {
       "id": "xray",
